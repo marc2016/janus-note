@@ -11,12 +11,14 @@ dist/
 dist-ssr/
 build/
 out/
+.vite/
 *.tsbuildinfo
 
 # Tauri / Rust
 target/
 src-tauri/target/
-src-tauri/gen/
+src-tauri/gen/schemas/
+**/*.rs.bk
 
 # Environment and local configs
 .env
@@ -44,6 +46,9 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Testing & Coverage
+coverage/
 
 # Logs & temporary files
 *.log
