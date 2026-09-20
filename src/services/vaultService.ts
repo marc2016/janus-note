@@ -130,6 +130,17 @@ export const vaultService = {
     mockStorage[cleanPath] = content;
   },
 
+  async createFolder(path: string): Promise<void> {
+    const cleanPath = path.replace(/^\/+/, '');
+    if (isTauriEnvironment()) {
+      return await invoke<void>('vault_create_folder', { path: cleanPath });
+    }
+    // Browser mock
+    if (!mockStorage[`${cleanPath}/.keep`]) {
+      mockStorage[`${cleanPath}/.keep`] = '';
+    }
+  },
+
   async listFiles(): Promise<FileNode[]> {
     if (isTauriEnvironment()) {
       return await invoke<FileNode[]>('vault_list_files');

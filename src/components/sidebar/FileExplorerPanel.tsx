@@ -5,6 +5,7 @@ import {
   FileText, 
   FileCode2, 
   Plus, 
+  FolderPlus,
   RotateCw, 
   Search, 
   ChevronRight, 
@@ -109,17 +110,28 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, level, activePath, onSelect, 
 };
 
 export const FileExplorerPanel: React.FC = () => {
-  const { fileTree, activeTabPath, openNote, createNewNote, refreshFiles, isLoading } = useVault();
+  const { fileTree, activeTabPath, openNote, createNewNote, createFolder, refreshFiles, isLoading } = useVault();
   const [filterText, setFilterText] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
+  const [isCreatingNote, setIsCreatingNote] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderPath, setNewFolderPath] = useState('');
 
-  const handleCreateSubmit = async (e: React.FormEvent) => {
+  const handleCreateNoteSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newNoteTitle.trim()) {
       await createNewNote(newNoteTitle.trim());
       setNewNoteTitle('');
-      setIsCreating(false);
+      setIsCreatingNote(false);
+    }
+  };
+
+  const handleCreateFolderSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newFolderPath.trim()) {
+      await createFolder(newFolderPath.trim());
+      setNewFolderPath('');
+      setIsCreatingFolder(false);
     }
   };
 
@@ -132,11 +144,24 @@ export const FileExplorerPanel: React.FC = () => {
         </span>
         <div className="flex items-center space-x-1">
           <button
-            onClick={() => setIsCreating(true)}
+            onClick={() => {
+              setIsCreatingNote(true);
+              setIsCreatingFolder(false);
+            }}
             title="Create New Note"
             className="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => {
+              setIsCreatingFolder(true);
+              setIsCreatingNote(false);
+            }}
+            title="Create New Folder"
+            className="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors"
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={refreshFiles}
@@ -164,15 +189,15 @@ export const FileExplorerPanel: React.FC = () => {
       </div>
 
       {/* New Note inline input form */}
-      {isCreating && (
-        <form onSubmit={handleCreateSubmit} className="px-3 py-1.5 flex-shrink-0 bg-surface/40">
+      {isCreatingNote && (
+        <form onSubmit={handleCreateNoteSubmit} className="px-3 py-1.5 flex-shrink-0 bg-surface/40">
           <input
             type="text"
             autoFocus
             value={newNoteTitle}
             onChange={e => setNewNoteTitle(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Escape') setIsCreating(false);
+              if (e.key === 'Escape') setIsCreatingNote(false);
             }}
             placeholder="Note name (e.g. roadmap.md)"
             className="w-full bg-surface border border-accent rounded px-2 py-1 text-xs text-text-primary focus:outline-none"
@@ -180,7 +205,39 @@ export const FileExplorerPanel: React.FC = () => {
           <div className="flex justify-end space-x-1 mt-1 text-[10px]">
             <button
               type="button"
-              onClick={() => setIsCreating(false)}
+              onClick={() => setIsCreatingNote(false)}
+              className="px-2 py-0.5 text-text-muted hover:text-text-primary"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-2 py-0.5 bg-accent text-white rounded hover:bg-accent-hover font-medium"
+            >
+              Create
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* New Folder inline input form (exact visual & behavioral parity with New Note) */}
+      {isCreatingFolder && (
+        <form onSubmit={handleCreateFolderSubmit} className="px-3 py-1.5 flex-shrink-0 bg-surface/40">
+          <input
+            type="text"
+            autoFocus
+            value={newFolderPath}
+            onChange={e => setNewFolderPath(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') setIsCreatingFolder(false);
+            }}
+            placeholder="Folder name (e.g. docs/architecture)"
+            className="w-full bg-surface border border-accent rounded px-2 py-1 text-xs text-text-primary focus:outline-none"
+          />
+          <div className="flex justify-end space-x-1 mt-1 text-[10px]">
+            <button
+              type="button"
+              onClick={() => setIsCreatingFolder(false)}
               className="px-2 py-0.5 text-text-muted hover:text-text-primary"
             >
               Cancel
@@ -200,12 +257,26 @@ export const FileExplorerPanel: React.FC = () => {
         {fileTree.length === 0 ? (
           <div className="px-4 py-8 text-center text-xs text-text-muted">
             <p>No files in Vault</p>
-            <button
-              onClick={() => createNewNote('welcome.md')}
-              className="mt-2 text-accent hover:underline text-xs"
-            >
-              + Create welcome.md
-            </button>
+            <div className="mt-2 flex flex-col items-center space-y-1">
+              <button
+                onClick={() => {
+                  setIsCreatingNote(true);
+                  setIsCreatingFolder(false);
+                }}
+                className="text-accent hover:underline text-xs"
+              >
+                + Create note
+              </button>
+              <button
+                onClick={() => {
+                  setIsCreatingFolder(true);
+                  setIsCreatingNote(false);
+                }}
+                className="text-accent hover:underline text-xs"
+              >
+                + Create folder
+              </button>
+            </div>
           </div>
         ) : (
           fileTree.map(node => (

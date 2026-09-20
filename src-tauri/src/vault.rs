@@ -78,19 +78,25 @@ pub fn validate_and_resolve_path(vault_root: &Path, user_path: &str) -> Result<P
             return Err("Security Error: Resolved path escapes active Vault root".to_string());
         }
     } else {
-        // For files that do not exist yet (e.g. for write), verify parent directory
-        if let Some(parent) = resolved.parent() {
-            if parent.exists() {
-                let canonical_root = vault_root
-                    .canonicalize()
-                    .map_err(|e| format!("Failed to canonicalize vault root: {}", e))?;
-                let canonical_parent = parent
-                    .canonicalize()
-                    .map_err(|e| format!("Failed to canonicalize parent path: {}", e))?;
+        // For files/directories that do not exist yet, find nearest existing ancestor and verify
+        let mut curr = resolved.as_path();
+        while !curr.exists() {
+            if let Some(parent) = curr.parent() {
+                curr = parent;
+            } else {
+                break;
+            }
+        }
+        if curr.exists() {
+            let canonical_root = vault_root
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize vault root: {}", e))?;
+            let canonical_curr = curr
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize ancestor path: {}", e))?;
 
-                if !canonical_parent.starts_with(&canonical_root) {
-                    return Err("Security Error: Parent directory escapes active Vault root".to_string());
-                }
+            if !canonical_curr.starts_with(&canonical_root) {
+                return Err("Security Error: Path escapes active Vault root".to_string());
             }
         }
     }
@@ -327,6 +333,20 @@ pub fn write_file_impl(vault_root: &Path, path: &str, content: &str) -> Result<(
     Ok(())
 }
 
+pub fn create_folder_impl(vault_root: &Path, rel_path: &str) -> Result<(), String> {
+    let trimmed = rel_path.trim();
+    if trimmed.is_empty() {
+        return Err("Folder path cannot be empty".to_string());
+    }
+
+    let target_path = validate_and_resolve_path(vault_root, trimmed)?;
+    if !target_path.exists() {
+        fs::create_dir_all(&target_path)
+            .map_err(|e| format!("Failed to create folder {:?}: {}", trimmed, e))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn vault_read_file(path: String, state: State<'_, VaultState>) -> Result<String, String> {
     let vault_root = {
@@ -351,6 +371,17 @@ pub fn vault_write_file(
     };
 
     write_file_impl(&vault_root, &path, &content)
+}
+
+#[tauri::command]
+pub fn vault_create_folder(path: String, state: State<'_, VaultState>) -> Result<(), String> {
+    let vault_root = {
+        let lock = state.current_vault.lock().map_err(|e| e.to_string())?;
+        lock.clone()
+            .ok_or_else(|| "No active Vault selected".to_string())?
+    };
+
+    create_folder_impl(&vault_root, &path)
 }
 
 #[tauri::command]
@@ -494,5 +525,34 @@ mod tests {
         assert_eq!(nodes[0].name, "folder-a");
         assert_eq!(nodes[1].name, "root-note.md");
         assert!(!nodes[1].is_dir);
+    }
+
+    #[test]
+    fn test_create_folder_nested_and_idempotent() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        // Test creating deep nested directory
+        let res = create_folder_impl(&root, "projects/janus/specs");
+        assert!(res.is_ok());
+        assert!(root.join("projects/janus/specs").is_dir());
+
+        // Test idempotency: creating existing directory succeeds without error
+        let res2 = create_folder_impl(&root, "projects/janus/specs");
+        assert!(res2.is_ok());
+
+        // Test empty folder path rejected
+        let res_empty = create_folder_impl(&root, "   ");
+        assert!(res_empty.is_err());
+    }
+
+    #[test]
+    fn test_create_folder_rejects_traversal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let res = create_folder_impl(&root, "../escaped_dir");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Path traversal"));
     }
 }

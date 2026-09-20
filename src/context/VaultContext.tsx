@@ -21,6 +21,7 @@ interface VaultContextType {
   updateActiveContent: (body: string, updatedFrontmatter?: Record<string, any>) => void;
   saveActiveNote: () => Promise<void>;
   createNewNote: (fileName?: string) => Promise<void>;
+  createFolder: (folderPath: string) => Promise<void>;
   toggleViewMode: () => void;
   setViewMode: (mode: ViewMode) => void;
   dismissBanner: () => void;
@@ -276,6 +277,21 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const createFolder = useCallback(
+    async (folderPath: string) => {
+      const trimmed = folderPath.trim();
+      if (!trimmed) return;
+      try {
+        await vaultService.createFolder(trimmed);
+        await refreshFiles();
+      } catch (err) {
+        console.error('Failed to create folder:', err);
+        throw err;
+      }
+    },
+    [refreshFiles]
+  );
+
   const toggleViewMode = () => {
     setViewMode(prev => (prev === 'edit' ? 'preview' : 'edit'));
   };
@@ -352,6 +368,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         updateActiveContent,
         saveActiveNote,
         createNewNote,
+        createFolder,
         toggleViewMode,
         setViewMode,
         dismissBanner,

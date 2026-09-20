@@ -16,6 +16,7 @@ pub fn run() {
             vault::vault_select_folder,
             vault::vault_read_file,
             vault::vault_write_file,
+            vault::vault_create_folder,
             vault::vault_list_files,
             vault::vault_start_watcher
         ])
