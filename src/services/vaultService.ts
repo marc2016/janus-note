@@ -141,43 +141,138 @@ export const vaultService = {
     }
   },
 
+  async movePaths(sourcePaths: string[], destinationFolder: string): Promise<string[]> {
+    const cleanSources = sourcePaths.map(p => p.replace(/^\/+/, ''));
+    const cleanDestFolder = destinationFolder.replace(/^\/+/, '').replace(/\/+$/, '');
+
+    if (isTauriEnvironment()) {
+      return await invoke<string[]>('vault_move_paths', {
+        sourcePaths: cleanSources,
+        destinationFolder: cleanDestFolder
+      });
+    }
+
+    // Browser mock
+    const movedPaths: string[] = [];
+
+    for (const src of cleanSources) {
+      const srcParts = src.split('/');
+      const baseName = srcParts[srcParts.length - 1];
+      const targetDest = cleanDestFolder ? `${cleanDestFolder}/${baseName}` : baseName;
+
+      if (src === targetDest) {
+        continue;
+      }
+
+      // Check if src is an exact file in mockStorage
+      if (src in mockStorage) {
+        if (targetDest in mockStorage) {
+          throw new Error(`An item named '${baseName}' already exists in destination`);
+        }
+        mockStorage[targetDest] = mockStorage[src];
+        delete mockStorage[src];
+        movedPaths.push(targetDest);
+      } else {
+        // Directory in mock storage
+        const prefix = `${src}/`;
+        const matchingKeys = Object.keys(mockStorage).filter(k => k === src || k.startsWith(prefix));
+        if (matchingKeys.length === 0) {
+          throw new Error(`Source path not found: ${src}`);
+        }
+
+        // Cycle check
+        if (cleanDestFolder === src || cleanDestFolder.startsWith(`${src}/`)) {
+          throw new Error(`Cannot move directory '${src}' into itself or its subdirectory`);
+        }
+
+        // Collision check
+        const targetPrefix = `${targetDest}/`;
+        const hasCollision = Object.keys(mockStorage).some(k => k === targetDest || k.startsWith(targetPrefix));
+        if (hasCollision) {
+          throw new Error(`An item named '${baseName}' already exists in destination`);
+        }
+
+        for (const oldKey of matchingKeys) {
+          const suffix = oldKey.slice(src.length);
+          const newKey = `${targetDest}${suffix}`;
+          mockStorage[newKey] = mockStorage[oldKey];
+          delete mockStorage[oldKey];
+        }
+        movedPaths.push(targetDest);
+      }
+    }
+
+    return movedPaths;
+  },
+
   async listFiles(): Promise<FileNode[]> {
     if (isTauriEnvironment()) {
       return await invoke<FileNode[]>('vault_list_files');
     }
 
-    // Build tree from mockStorage
+    // Build tree from mockStorage with recursive directory support
     const rootNodes: FileNode[] = [];
-    const dirs: Record<string, FileNode> = {};
+    const dirMap = new Map<string, FileNode>();
+
+    const getOrCreateDir = (dirPath: string): FileNode => {
+      if (dirMap.has(dirPath)) return dirMap.get(dirPath)!;
+      const parts = dirPath.split('/');
+      const dirName = parts[parts.length - 1];
+      const dirNode: FileNode = {
+        name: dirName,
+        path: dirPath,
+        is_dir: true,
+        children: []
+      };
+      dirMap.set(dirPath, dirNode);
+
+      if (parts.length === 1) {
+        rootNodes.push(dirNode);
+      } else {
+        const parentPath = parts.slice(0, -1).join('/');
+        const parentDir = getOrCreateDir(parentPath);
+        parentDir.children?.push(dirNode);
+      }
+      return dirNode;
+    };
 
     Object.keys(mockStorage).sort().forEach(filePath => {
       const parts = filePath.split('/');
       if (parts.length === 1) {
+        if (filePath.endsWith('.keep')) return;
         rootNodes.push({
           name: parts[0],
           path: parts[0],
           is_dir: false
         });
       } else {
-        const dirName = parts[0];
-        if (!dirs[dirName]) {
-          const dirNode: FileNode = {
-            name: dirName,
-            path: dirName,
-            is_dir: true,
-            children: []
-          };
-          dirs[dirName] = dirNode;
-          rootNodes.push(dirNode);
+        const fileName = parts[parts.length - 1];
+        const dirPath = parts.slice(0, -1).join('/');
+        const dirNode = getOrCreateDir(dirPath);
+        if (fileName !== '.keep') {
+          dirNode.children?.push({
+            name: fileName,
+            path: filePath,
+            is_dir: false
+          });
         }
-        dirs[dirName].children?.push({
-          name: parts.slice(1).join('/'),
-          path: filePath,
-          is_dir: false
-        });
       }
     });
 
+    const sortNodes = (nodes: FileNode[]) => {
+      nodes.sort((a, b) => {
+        if (a.is_dir && !b.is_dir) return -1;
+        if (!a.is_dir && b.is_dir) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      for (const node of nodes) {
+        if (node.children) {
+          sortNodes(node.children);
+        }
+      }
+    };
+
+    sortNodes(rootNodes);
     return rootNodes;
   },
 

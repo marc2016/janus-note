@@ -11,7 +11,12 @@ interface VaultContextType {
   activeTab: TabItem | null;
   viewMode: ViewMode;
   externalModificationBanner: string | null;
+  errorMessage: string | null;
   isLoading: boolean;
+  selectedPaths: Set<string>;
+  setSelectedPaths: React.Dispatch<React.SetStateAction<Set<string>>>;
+  lastSelectedPath: string | null;
+  setLastSelectedPath: (path: string | null) => void;
   selectVault: () => Promise<void>;
   openSampleVault: () => Promise<void>;
   refreshFiles: () => Promise<void>;
@@ -22,9 +27,11 @@ interface VaultContextType {
   saveActiveNote: () => Promise<void>;
   createNewNote: (fileName?: string) => Promise<void>;
   createFolder: (folderPath: string) => Promise<void>;
+  moveItems: (sourcePaths: string[], destinationFolder: string) => Promise<void>;
   toggleViewMode: () => void;
   setViewMode: (mode: ViewMode) => void;
   dismissBanner: () => void;
+  dismissErrorMessage: () => void;
   reloadExternalFile: (path: string) => Promise<void>;
 }
 
@@ -38,6 +45,9 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [viewMode, setViewMode] = useState<ViewMode>('edit');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [externalModificationBanner, setExternalModificationBanner] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -300,6 +310,99 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setExternalModificationBanner(null);
   };
 
+  const dismissErrorMessage = () => {
+    setErrorMessage(null);
+  };
+
+  const moveItems = useCallback(
+    async (sourcePaths: string[], destinationFolder: string) => {
+      if (sourcePaths.length === 0) return;
+      try {
+        await vaultService.movePaths(sourcePaths, destinationFolder);
+        await refreshFiles();
+
+        // Update open tabs
+        setOpenTabs(currentTabs => {
+          let updatedActiveTabPath = activeTabPath;
+
+          const newTabs = currentTabs.map(tab => {
+            for (const src of sourcePaths) {
+              const cleanSrc = src.replace(/^\/+/, '');
+              const baseName = cleanSrc.split('/').pop() || '';
+              const cleanDestFolder = destinationFolder.replace(/^\/+/, '').replace(/\/+$/, '');
+              const targetDest = cleanDestFolder ? `${cleanDestFolder}/${baseName}` : baseName;
+
+              if (tab.path === cleanSrc) {
+                if (activeTabPath === tab.path) {
+                  updatedActiveTabPath = targetDest;
+                }
+                return {
+                  ...tab,
+                  path: targetDest,
+                  title: targetDest.split('/').pop()?.replace(/\.md$/, '') || tab.title
+                };
+              }
+
+              if (tab.path.startsWith(`${cleanSrc}/`)) {
+                const suffix = tab.path.slice(cleanSrc.length);
+                const newPath = `${targetDest}${suffix}`;
+                if (activeTabPath === tab.path) {
+                  updatedActiveTabPath = newPath;
+                }
+                return {
+                  ...tab,
+                  path: newPath,
+                  title: newPath.split('/').pop()?.replace(/\.md$/, '') || tab.title
+                };
+              }
+            }
+            return tab;
+          });
+
+          if (updatedActiveTabPath !== activeTabPath) {
+            setActiveTabPath(updatedActiveTabPath);
+          }
+
+          return newTabs;
+        });
+
+        // Update selectedPaths to reflect new locations
+        setSelectedPaths(prev => {
+          const next = new Set<string>();
+          for (const item of prev) {
+            let matched = false;
+            for (const src of sourcePaths) {
+              const cleanSrc = src.replace(/^\/+/, '');
+              const baseName = cleanSrc.split('/').pop() || '';
+              const cleanDestFolder = destinationFolder.replace(/^\/+/, '').replace(/\/+$/, '');
+              const targetDest = cleanDestFolder ? `${cleanDestFolder}/${baseName}` : baseName;
+
+              if (item === cleanSrc) {
+                next.add(targetDest);
+                matched = true;
+                break;
+              } else if (item.startsWith(`${cleanSrc}/`)) {
+                next.add(`${targetDest}${item.slice(cleanSrc.length)}`);
+                matched = true;
+                break;
+              }
+            }
+            if (!matched) {
+              next.add(item);
+            }
+          }
+          return next;
+        });
+      } catch (err: any) {
+        console.error('Failed to move items:', err);
+        const msg = typeof err === 'string' ? err : err?.message || 'Failed to move items';
+        setErrorMessage(msg);
+        throw err;
+      }
+    },
+    [activeTabPath, refreshFiles]
+  );
+
   const reloadExternalFile = async (path: string) => {
     try {
       const raw = await vaultService.readFile(path);
@@ -358,7 +461,12 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeTab,
         viewMode,
         externalModificationBanner,
+        errorMessage,
         isLoading,
+        selectedPaths,
+        setSelectedPaths,
+        lastSelectedPath,
+        setLastSelectedPath,
         selectVault,
         openSampleVault,
         refreshFiles,
@@ -369,9 +477,11 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         saveActiveNote,
         createNewNote,
         createFolder,
+        moveItems,
         toggleViewMode,
         setViewMode,
         dismissBanner,
+        dismissErrorMessage,
         reloadExternalFile
       }}
     >

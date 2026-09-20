@@ -347,6 +347,136 @@ pub fn create_folder_impl(vault_root: &Path, rel_path: &str) -> Result<(), Strin
     Ok(())
 }
 
+#[derive(Debug)]
+struct PathMovePlan {
+    source_abs: PathBuf,
+    dest_abs: PathBuf,
+    dest_rel: String,
+}
+
+pub fn move_paths_impl(
+    vault_root: &Path,
+    source_paths: &[String],
+    destination_folder: &str,
+) -> Result<Vec<String>, String> {
+    if source_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let trimmed_dest = destination_folder.trim().trim_matches(['/', '\\']);
+    let (dest_dir, dest_dir_rel) = if trimmed_dest.is_empty() || trimmed_dest == "." {
+        (vault_root.to_path_buf(), "".to_string())
+    } else {
+        let resolved = validate_and_resolve_path(vault_root, trimmed_dest)?;
+        if !resolved.exists() {
+            return Err(format!("Destination folder does not exist: {}", trimmed_dest));
+        }
+        if !resolved.is_dir() {
+            return Err(format!("Destination is not a directory: {}", trimmed_dest));
+        }
+        (resolved, trimmed_dest.replace('\\', "/"))
+    };
+
+    let canonical_dest_dir = dest_dir
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize destination folder: {}", e))?;
+
+    let mut plans = Vec::new();
+    let mut target_dest_paths = std::collections::HashSet::new();
+
+    for source_rel in source_paths {
+        let clean_source = source_rel.trim().trim_matches(['/', '\\']).replace('\\', "/");
+        if clean_source.is_empty() {
+            return Err("Source path cannot be empty".to_string());
+        }
+
+        let source_abs = validate_and_resolve_path(vault_root, &clean_source)?;
+        if !source_abs.exists() {
+            return Err(format!("Source path does not exist: {}", clean_source));
+        }
+
+        let file_name = source_abs
+            .file_name()
+            .ok_or_else(|| format!("Invalid source path: {}", clean_source))?
+            .to_string_lossy()
+            .to_string();
+
+        let dest_abs = dest_dir.join(&file_name);
+
+        // If source is already in the destination directory (same path), skip as no-op
+        if source_abs == dest_abs {
+            continue;
+        }
+
+        // Cycle check: If source is a directory, ensure destination is not inside source
+        if source_abs.is_dir() {
+            let canonical_source = source_abs
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize source path: {}", e))?;
+
+            if canonical_dest_dir.starts_with(&canonical_source) {
+                return Err(format!(
+                    "Cannot move directory '{}' into itself or its subdirectory",
+                    clean_source
+                ));
+            }
+        }
+
+        // Destination collision check on disk
+        if dest_abs.exists() {
+            return Err(format!(
+                "An item named '{}' already exists in the destination folder",
+                file_name
+            ));
+        }
+
+        // Destination collision check within the same batch
+        if !target_dest_paths.insert(dest_abs.clone()) {
+            return Err(format!(
+                "Multiple items in the batch resolve to the same destination name '{}'",
+                file_name
+            ));
+        }
+
+        let dest_rel = if dest_dir_rel.is_empty() {
+            file_name
+        } else {
+            format!("{}/{}", dest_dir_rel, file_name)
+        };
+
+        plans.push(PathMovePlan {
+            source_abs,
+            dest_abs,
+            dest_rel,
+        });
+    }
+
+    // Execution phase (all validations passed)
+    let mut moved_paths = Vec::new();
+    for plan in plans {
+        fs::rename(&plan.source_abs, &plan.dest_abs)
+            .map_err(|e| format!("Failed to move {:?} to {:?}: {}", plan.source_abs, plan.dest_abs, e))?;
+        moved_paths.push(plan.dest_rel);
+    }
+
+    Ok(moved_paths)
+}
+
+#[tauri::command]
+pub fn vault_move_paths(
+    source_paths: Vec<String>,
+    destination_folder: String,
+    state: State<'_, VaultState>,
+) -> Result<Vec<String>, String> {
+    let vault_root = {
+        let lock = state.current_vault.lock().map_err(|e| e.to_string())?;
+        lock.clone()
+            .ok_or_else(|| "No active Vault selected".to_string())?
+    };
+
+    move_paths_impl(&vault_root, &source_paths, &destination_folder)
+}
+
 #[tauri::command]
 pub fn vault_read_file(path: String, state: State<'_, VaultState>) -> Result<String, String> {
     let vault_root = {
@@ -554,5 +684,115 @@ mod tests {
         let res = create_folder_impl(&root, "../escaped_dir");
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Path traversal"));
+    }
+
+    #[test]
+    fn test_move_paths_files_and_directories() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("folder-a")).unwrap();
+        fs::create_dir_all(root.join("folder-b")).unwrap();
+        fs::write(root.join("folder-a/doc.md"), "doc content").unwrap();
+
+        // Move file into folder-b
+        let moved = move_paths_impl(&root, &["folder-a/doc.md".to_string()], "folder-b").unwrap();
+        assert_eq!(moved, vec!["folder-b/doc.md"]);
+        assert!(!root.join("folder-a/doc.md").exists());
+        assert!(root.join("folder-b/doc.md").exists());
+
+        // Move file to vault root ("")
+        let moved_root = move_paths_impl(&root, &["folder-b/doc.md".to_string()], "").unwrap();
+        assert_eq!(moved_root, vec!["doc.md"]);
+        assert!(root.join("doc.md").exists());
+        assert!(!root.join("folder-b/doc.md").exists());
+
+        // Move entire folder-a into folder-b
+        let moved_dir = move_paths_impl(&root, &["folder-a".to_string()], "folder-b").unwrap();
+        assert_eq!(moved_dir, vec!["folder-b/folder-a"]);
+        assert!(root.join("folder-b/folder-a").is_dir());
+        assert!(!root.join("folder-a").exists());
+    }
+
+    #[test]
+    fn test_move_paths_batch_multiple_items() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("note1.md"), "1").unwrap();
+        fs::write(root.join("note2.md"), "2").unwrap();
+
+        let sources = vec!["note1.md".to_string(), "note2.md".to_string()];
+        let moved = move_paths_impl(&root, &sources, "archive").unwrap();
+        assert_eq!(moved.len(), 2);
+        assert!(root.join("archive/note1.md").exists());
+        assert!(root.join("archive/note2.md").exists());
+        assert!(!root.join("note1.md").exists());
+        assert!(!root.join("note2.md").exists());
+    }
+
+    #[test]
+    fn test_move_paths_cycle_rejection() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("parent/child/grandchild")).unwrap();
+
+        // Move folder into itself
+        let res_self = move_paths_impl(&root, &["parent".to_string()], "parent");
+        assert!(res_self.is_err());
+        assert!(res_self.unwrap_err().contains("Cannot move directory"));
+
+        // Move folder into its own child
+        let res_child = move_paths_impl(&root, &["parent".to_string()], "parent/child");
+        assert!(res_child.is_err());
+        assert!(res_child.unwrap_err().contains("Cannot move directory"));
+
+        // Move folder into its own grandchild
+        let res_grandchild = move_paths_impl(&root, &["parent".to_string()], "parent/child/grandchild");
+        assert!(res_grandchild.is_err());
+        assert!(res_grandchild.unwrap_err().contains("Cannot move directory"));
+    }
+
+    #[test]
+    fn test_move_paths_collision_rejection() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("dest")).unwrap();
+        fs::write(root.join("dest/file.md"), "existing").unwrap();
+        fs::write(root.join("file.md"), "source").unwrap();
+
+        let res = move_paths_impl(&root, &["file.md".to_string()], "dest");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("already exists"));
+
+        // Destination unchanged
+        assert_eq!(fs::read_to_string(root.join("dest/file.md")).unwrap(), "existing");
+        assert_eq!(fs::read_to_string(root.join("file.md")).unwrap(), "source");
+    }
+
+    #[test]
+    fn test_move_paths_traversal_rejection() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let res = move_paths_impl(&root, &["../outside.md".to_string()], "");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Path traversal"));
+    }
+
+    #[test]
+    fn test_move_paths_same_folder_noop() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("folder")).unwrap();
+        fs::write(root.join("folder/note.md"), "content").unwrap();
+
+        let moved = move_paths_impl(&root, &["folder/note.md".to_string()], "folder").unwrap();
+        assert!(moved.is_empty());
+        assert!(root.join("folder/note.md").exists());
     }
 }

@@ -17,6 +17,7 @@ pub fn run() {
             vault::vault_read_file,
             vault::vault_write_file,
             vault::vault_create_folder,
+            vault::vault_move_paths,
             vault::vault_list_files,
             vault::vault_start_watcher
         ])
