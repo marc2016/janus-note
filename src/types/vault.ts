@@ -23,6 +23,8 @@ export interface TabItem {
   rawContent: string;
   frontmatter: Record<string, any>;
   lastSavedContent: string;
+  /** Incremented whenever content is externally reset (e.g. after triage). Forces editor to re-initialise. */
+  contentVersion: number;
 }
 
 export type ViewMode = 'edit' | 'preview';

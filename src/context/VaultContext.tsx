@@ -28,6 +28,7 @@ interface VaultContextType {
   createNewNote: (fileName?: string) => Promise<void>;
   createFolder: (folderPath: string) => Promise<void>;
   moveItems: (sourcePaths: string[], destinationFolder: string) => Promise<void>;
+  triageContent: (snippet: string, destPath: string, mode: 'create' | 'append') => Promise<void>;
   toggleViewMode: () => void;
   setViewMode: (mode: ViewMode) => void;
   dismissBanner: () => void;
@@ -193,7 +194,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         content: body,
         rawContent,
         frontmatter,
-        lastSavedContent: rawContent
+        lastSavedContent: rawContent,
+        contentVersion: 0
       };
 
       setOpenTabs(prev => [...prev, newTab]);
@@ -403,6 +405,46 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [activeTabPath, refreshFiles]
   );
 
+  const triageContent = useCallback(
+    async (snippet: string, destPath: string, mode: 'create' | 'append') => {
+      const cleanDest = destPath.replace(/^\/+/, '');
+      if (!cleanDest) throw new Error('Destination path cannot be empty');
+
+      // Ensure parent folders exist
+      const parentDir = cleanDest.includes('/') ? cleanDest.split('/').slice(0, -1).join('/') : '';
+      if (parentDir) {
+        await vaultService.createFolder(parentDir);
+      }
+
+      if (mode === 'append') {
+        let existing = '';
+        try { existing = await vaultService.readFile(cleanDest); } catch { /* file doesn't exist yet */ }
+        const combined = existing ? `${existing.trimEnd()}\n\n${snippet.trim()}\n` : `${snippet.trim()}\n`;
+        await vaultService.writeFile(cleanDest, combined);
+      } else {
+        await vaultService.writeFile(cleanDest, `${snippet.trim()}\n`);
+      }
+
+      // Remove snippet from Inbox.md
+      const currentInbox = await vaultService.readFile('Inbox.md');
+      const newInbox = currentInbox.replace(snippet, '').replace(/\n{3,}/g, '\n\n').trimStart();
+      await vaultService.writeFile('Inbox.md', newInbox || '# 📥 Inbox\n\n');
+
+      // Update any open tabs (Inbox.md and dest)
+      const rawInbox = await vaultService.readFile('Inbox.md');
+      const { frontmatter: inboxFm, body: inboxBody } = parseMarkdownWithFrontmatter(rawInbox);
+      setOpenTabs(prev => prev.map(t => {
+        if (t.path === 'Inbox.md') {
+          return { ...t, content: inboxBody, frontmatter: inboxFm, rawContent: rawInbox, lastSavedContent: rawInbox, isDirty: false, contentVersion: t.contentVersion + 1 };
+        }
+        return t;
+      }));
+
+      await refreshFiles();
+    },
+    [refreshFiles]
+  );
+
   const reloadExternalFile = async (path: string) => {
     try {
       const raw = await vaultService.readFile(path);
@@ -478,6 +520,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         createNewNote,
         createFolder,
         moveItems,
+        triageContent,
         toggleViewMode,
         setViewMode,
         dismissBanner,

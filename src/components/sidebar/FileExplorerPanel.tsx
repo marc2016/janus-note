@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Folder, 
   FolderOpen, 
@@ -11,7 +11,8 @@ import {
   ChevronRight, 
   ChevronDown,
   AlertCircle,
-  X
+  X,
+  Inbox
 } from 'lucide-react';
 import { FileNode } from '../../types/vault';
 import { useVault } from '../../context/VaultContext';
@@ -272,6 +273,22 @@ export const FileExplorerPanel: React.FC = () => {
   const [isDragOverRoot, setIsDragOverRoot] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard shortcut: Cmd+Shift+I / Ctrl+Shift+I to open Inbox.md
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (isCmdOrCtrl && e.shiftKey && e.key.toLowerCase() === 'i') {
+        e.preventDefault();
+        openNote('Inbox.md');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openNote]);
+
+  // Filter Inbox.md out of regular tree — it is rendered as a pinned item
+  const filteredFileTree = fileTree.filter(node => node.path.toLowerCase() !== 'inbox.md');
 
   // Helper to flatten visible nodes for Shift+Click range selection
   const getVisibleNodes = (nodes: FileNode[]): FileNode[] => {
@@ -560,6 +577,21 @@ export const FileExplorerPanel: React.FC = () => {
         </form>
       )}
 
+      {/* Pinned Inbox Item */}
+      <div
+        onClick={e => { e.stopPropagation(); openNote('Inbox.md'); }}
+        title="Open Inbox (Cmd+Shift+I)"
+        className={`mx-2 mt-2 mb-1 flex items-center space-x-2 px-2 py-1.5 rounded-md cursor-pointer transition-all flex-shrink-0 border ${
+          activeTabPath === 'Inbox.md'
+            ? 'bg-accent/20 border-accent/50 text-accent'
+            : 'bg-surface/50 border-border-subtle/60 text-text-secondary hover:text-text-primary hover:bg-surface-hover hover:border-border-subtle'
+        }`}
+      >
+        <Inbox className={`w-3.5 h-3.5 flex-shrink-0 ${activeTabPath === 'Inbox.md' ? 'text-accent' : 'text-amber-400'}`} />
+        <span className="text-xs font-semibold flex-1">Inbox</span>
+        <span className="text-[9px] text-text-dim font-mono opacity-60">⌘⇧I</span>
+      </div>
+
       {/* File Tree List & Root Drop Target */}
       <div 
         ref={containerRef}
@@ -570,7 +602,7 @@ export const FileExplorerPanel: React.FC = () => {
           isDragOverRoot ? 'bg-accent/5 ring-1 ring-dashed ring-accent/60' : ''
         }`}
       >
-        {fileTree.length === 0 ? (
+        {filteredFileTree.length === 0 ? (
           <div className="px-4 py-8 text-center text-xs text-text-muted">
             <p>No files in Vault</p>
             <div className="mt-2 flex flex-col items-center space-y-1">
@@ -596,7 +628,7 @@ export const FileExplorerPanel: React.FC = () => {
           </div>
         ) : (
           <>
-            {fileTree.map(node => (
+            {filteredFileTree.map(node => (
               <TreeNode
                 key={node.path}
                 node={node}

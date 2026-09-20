@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent, ReactNodeViewRenderer, NodeViewWrapper, NodeViewContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlock from '@tiptap/extension-code-block';
@@ -28,10 +28,13 @@ import {
   FileCode2,
   Plus,
   FileText,
-  Layers
+  Layers,
+  Inbox,
+  SendToBack
 } from 'lucide-react';
 import { useVault } from '../../context/VaultContext';
 import { CompanionBlock } from './CompanionBlock';
+import { TriageModal } from './TriageModal';
 
 // Custom NodeView for codeblocks that intercepts 'tasks' and 'chart'
 const CustomCodeBlockView: React.FC<any> = ({ node }) => {
@@ -67,18 +70,22 @@ const ExtendedCodeBlock = CodeBlock.extend({
 export const TipTapEditor: React.FC = () => {
   const {
     vaultInfo,
-    selectVault,
-    openSampleVault,
+    activeTab,
     fileTree,
     openNote,
     createNewNote,
-    activeTab,
-    updateActiveContent,
     viewMode,
+    updateActiveContent,
+    selectVault,
+    openSampleVault,
     externalModificationBanner,
-    reloadExternalFile,
-    dismissBanner
+    dismissBanner,
+    reloadExternalFile
   } = useVault();
+
+  const [isTriageOpen, setIsTriageOpen] = useState(false);
+  const isInbox = activeTab?.path === 'Inbox.md';
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollPosRef = useRef<number>(0);
 
@@ -129,14 +136,14 @@ export const TipTapEditor: React.FC = () => {
     }
   });
 
-  // Update editor content when active tab changes
+  // Update editor content when active tab changes or content is externally reset (e.g. after triage)
   useEffect(() => {
     if (editor && activeTab) {
       if (editor.getHTML() !== activeTab.content) {
         editor.commands.setContent(activeTab.content);
       }
     }
-  }, [activeTab?.path, editor]);
+  }, [activeTab?.path, activeTab?.contentVersion, editor]);
 
   // Update editable property when viewMode toggles
   useEffect(() => {
@@ -400,6 +407,35 @@ export const TipTapEditor: React.FC = () => {
             <TableIcon className="w-3.5 h-3.5" />
           </button>
         </div>
+      )}
+
+      {/* Inbox Action Banner — shown only when Inbox.md is the active note */}
+      {isInbox && (
+        <div className="flex items-center justify-between px-4 py-2 bg-amber-950/30 border-b border-amber-800/40 flex-shrink-0">
+          <div className="flex items-center space-x-2 text-xs text-amber-300/80">
+            <Inbox className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-medium">Quick-capture Inbox</span>
+            <span className="text-amber-500/60">— schreibe einfach drauf los, dann einsortieren</span>
+          </div>
+          <button
+            id="inbox-triage-button"
+            onClick={() => setIsTriageOpen(true)}
+            title="Einsortieren (Cmd+Shift+T)"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 hover:border-amber-400/60 text-amber-300 hover:text-amber-200 text-xs font-semibold transition-all"
+          >
+            <SendToBack className="w-3.5 h-3.5" />
+            <span>Einsortieren</span>
+            <span className="text-[9px] font-mono text-amber-400/50 ml-0.5">⌘⇧T</span>
+          </button>
+        </div>
+      )}
+
+      {/* Triage Modal */}
+      {isTriageOpen && isInbox && (
+        <TriageModal
+          snippet={activeTab?.content?.trim() ?? ''}
+          onClose={() => setIsTriageOpen(false)}
+        />
       )}
 
       {/* Editor Main Scroll Area */}

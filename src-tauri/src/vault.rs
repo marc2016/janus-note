@@ -41,6 +41,22 @@ impl Default for VaultState {
     }
 }
 
+/// Checks if a relative path points to a protected system file that cannot be deleted or relocated.
+pub fn is_protected_system_file(rel_path: &str) -> bool {
+    let clean = rel_path.trim().trim_matches(['/', '\\']).replace('\\', "/");
+    clean.eq_ignore_ascii_case("inbox.md")
+}
+
+/// Ensures the default Inbox.md exists at the Vault root.
+pub fn ensure_inbox_initialized(vault_root: &Path) -> Result<(), String> {
+    let inbox_path = vault_root.join("Inbox.md");
+    if !inbox_path.exists() {
+        let default_content = "# 📥 Inbox\n\nWelcome to your quick capture inbox. Jot down thoughts, tasks, and ideas freely here.\nUse the Triage button (or Cmd+Shift+T) to file notes into your vault.\n";
+        write_file_impl(vault_root, "Inbox.md", default_content)?;
+    }
+    Ok(())
+}
+
 /// Validates that `target_rel_or_abs` stays strictly within `vault_root`.
 /// Returns the resolved canonical (or validated absolute) path within the vault.
 pub fn validate_and_resolve_path(vault_root: &Path, user_path: &str) -> Result<PathBuf, String> {
@@ -205,6 +221,7 @@ pub fn vault_get_current(
     // If no vault currently in memory, attempt to load persisted vault
     if lock.is_none() {
         if let Some(persisted) = load_persisted_vault() {
+            let _ = ensure_inbox_initialized(&persisted);
             // Setup watcher for persisted vault
             let _ = setup_vault_watcher(&persisted, &state, app_handle);
             *lock = Some(persisted);
@@ -242,6 +259,9 @@ pub fn vault_set_folder(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Vault".to_string());
+
+    // Ensure default Inbox.md exists in vault root
+    let _ = ensure_inbox_initialized(&canonical);
 
     // Update current vault
     {
@@ -390,6 +410,10 @@ pub fn move_paths_impl(
             return Err("Source path cannot be empty".to_string());
         }
 
+        if is_protected_system_file(&clean_source) {
+            return Err("Protected System Error: 'Inbox.md' is a protected system document and cannot be moved or renamed".to_string());
+        }
+
         let source_abs = validate_and_resolve_path(vault_root, &clean_source)?;
         if !source_abs.exists() {
             return Err(format!("Source path does not exist: {}", clean_source));
@@ -512,6 +536,43 @@ pub fn vault_create_folder(path: String, state: State<'_, VaultState>) -> Result
     };
 
     create_folder_impl(&vault_root, &path)
+}
+
+pub fn delete_item_impl(vault_root: &Path, rel_path: &str) -> Result<(), String> {
+    let clean = rel_path.trim().trim_matches(['/', '\\']).replace('\\', "/");
+    if clean.is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    if is_protected_system_file(&clean) {
+        return Err("Protected System Error: 'Inbox.md' is a protected system document and cannot be deleted".to_string());
+    }
+
+    let target = validate_and_resolve_path(vault_root, &clean)?;
+    if !target.exists() {
+        return Err(format!("Item not found: {}", clean));
+    }
+
+    if target.is_dir() {
+        fs::remove_dir_all(&target)
+            .map_err(|e| format!("Failed to delete directory {}: {}", clean, e))?;
+    } else {
+        fs::remove_file(&target)
+            .map_err(|e| format!("Failed to delete file {}: {}", clean, e))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn vault_delete_item(path: String, state: State<'_, VaultState>) -> Result<(), String> {
+    let vault_root = {
+        let lock = state.current_vault.lock().map_err(|e| e.to_string())?;
+        lock.clone()
+            .ok_or_else(|| "No active Vault selected".to_string())?
+    };
+
+    delete_item_impl(&vault_root, &path)
 }
 
 #[tauri::command]
@@ -794,5 +855,75 @@ mod tests {
         let moved = move_paths_impl(&root, &["folder/note.md".to_string()], "folder").unwrap();
         assert!(moved.is_empty());
         assert!(root.join("folder/note.md").exists());
+    }
+
+    #[test]
+    fn test_ensure_inbox_initialized() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        assert!(!root.join("Inbox.md").exists());
+        ensure_inbox_initialized(&root).unwrap();
+        assert!(root.join("Inbox.md").exists());
+
+        let content = fs::read_to_string(root.join("Inbox.md")).unwrap();
+        assert!(content.contains("# 📥 Inbox"));
+
+        // Second call should not overwrite existing content
+        fs::write(root.join("Inbox.md"), "custom content").unwrap();
+        ensure_inbox_initialized(&root).unwrap();
+        let content_after = fs::read_to_string(root.join("Inbox.md")).unwrap();
+        assert_eq!(content_after, "custom content");
+    }
+
+    #[test]
+    fn test_inbox_protected_against_delete() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        ensure_inbox_initialized(&root).unwrap();
+        assert!(root.join("Inbox.md").exists());
+
+        let res = delete_item_impl(&root, "Inbox.md");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("protected system document"));
+        assert!(root.join("Inbox.md").exists());
+
+        // Also case-insensitive check
+        let res2 = delete_item_impl(&root, "inbox.md");
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("protected system document"));
+        assert!(root.join("Inbox.md").exists());
+    }
+
+    #[test]
+    fn test_inbox_protected_against_move() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        ensure_inbox_initialized(&root).unwrap();
+        fs::create_dir_all(root.join("archive")).unwrap();
+
+        let res = move_paths_impl(&root, &["Inbox.md".to_string()], "archive");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("protected system document"));
+        assert!(root.join("Inbox.md").exists());
+        assert!(!root.join("archive/Inbox.md").exists());
+    }
+
+    #[test]
+    fn test_delete_normal_file_and_dir() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(root.join("temp.md"), "temporary").unwrap();
+        assert!(root.join("temp.md").exists());
+        delete_item_impl(&root, "temp.md").unwrap();
+        assert!(!root.join("temp.md").exists());
+
+        fs::create_dir_all(root.join("temp_dir/nested")).unwrap();
+        assert!(root.join("temp_dir").exists());
+        delete_item_impl(&root, "temp_dir").unwrap();
+        assert!(!root.join("temp_dir").exists());
     }
 }

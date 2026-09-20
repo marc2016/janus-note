@@ -9,6 +9,7 @@ export const isTauriEnvironment = (): boolean => {
 
 // In-memory mock storage for browser mode
 const mockStorage: Record<string, string> = {
+  'Inbox.md': `# 📥 Inbox\n\nWelcome to your quick capture inbox. Jot down thoughts, tasks, and ideas freely here.\nUse the Triage button (or Cmd+Shift+T) to file notes into your vault.\n`,
   'welcome.md': `---
 title: Welcome to Janus Note
 tags: [getting-started, notes]
@@ -284,5 +285,40 @@ export const vaultService = {
     }
     // Browser mock: no-op unlistener
     return () => {};
-  }
+  },
+
+  async deleteItem(path: string): Promise<void> {
+    const cleanPath = path.replace(/^\/+/, '');
+    if (isTauriEnvironment()) {
+      return await invoke<void>('vault_delete_item', { path: cleanPath });
+    }
+    // Browser mock: block Inbox.md
+    if (cleanPath.toLowerCase() === 'inbox.md') {
+      throw new Error("Protected System Error: 'Inbox.md' is a protected system document and cannot be deleted");
+    }
+    const prefix = `${cleanPath}/`;
+    const keysToDelete = Object.keys(mockStorage).filter(k => k === cleanPath || k.startsWith(prefix));
+    if (keysToDelete.length === 0) throw new Error(`Item not found: ${cleanPath}`);
+    for (const k of keysToDelete) delete mockStorage[k];
+  },
+
+  /**
+   * Generate AI triage payload: inbox content + flat vault path listing.
+   * Used by Phase 2 LLM integration to suggest filing destinations.
+   */
+  async getTriagePayload(): Promise<{ inboxContent: string; vaultTree: Array<{ path: string; isDir: boolean }> }> {
+    const inboxContent = await this.readFile('Inbox.md');
+    const files = await this.listFiles();
+    const flattenTree = (nodes: FileNode[], acc: Array<{ path: string; isDir: boolean }> = []) => {
+      for (const n of nodes) {
+        acc.push({ path: n.path, isDir: n.is_dir });
+        if (n.children) flattenTree(n.children, acc);
+      }
+      return acc;
+    };
+    return {
+      inboxContent,
+      vaultTree: flattenTree(files),
+    };
+  },
 };
