@@ -12,7 +12,8 @@ import {
   ChevronDown,
   AlertCircle,
   X,
-  Inbox
+  Inbox,
+  Sparkles
 } from 'lucide-react';
 import { FileNode } from '../../types/vault';
 import { useVault } from '../../context/VaultContext';
@@ -590,6 +591,21 @@ export const FileExplorerPanel: React.FC = () => {
         <Inbox className={`w-3.5 h-3.5 flex-shrink-0 ${activeTabPath === 'Inbox.md' ? 'text-accent' : 'text-amber-400'}`} />
         <span className="text-xs font-semibold flex-1">Inbox</span>
         <span className="text-[9px] text-text-dim font-mono opacity-60">⌘⇧I</span>
+      </div>
+
+      {/* Pinned AI Config Item */}
+      <div
+        onClick={e => { e.stopPropagation(); openNote('virtual:ai-config'); }}
+        title="Open AI Configuration"
+        className={`mx-2 mb-2 flex items-center space-x-2 px-2 py-1.5 rounded-md cursor-pointer transition-all flex-shrink-0 border ${
+          activeTabPath === 'virtual:ai-config'
+            ? 'bg-accent/20 border-accent/50 text-accent'
+            : 'bg-surface/50 border-border-subtle/60 text-text-secondary hover:text-text-primary hover:bg-surface-hover hover:border-border-subtle'
+        }`}
+      >
+        <Sparkles className={`w-3.5 h-3.5 flex-shrink-0 ${activeTabPath === 'virtual:ai-config' ? 'text-accent' : 'text-purple-400'}`} />
+        <span className="text-xs font-semibold flex-1">AI Config</span>
+        <span className="text-[9px] text-text-dim font-mono opacity-60">LLM</span>
       </div>
 
       {/* File Tree List & Root Drop Target */}

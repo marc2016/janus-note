@@ -15,9 +15,12 @@ export interface FileChangeEvent {
   kind: 'create' | 'modify' | 'remove' | 'other';
 }
 
+export type TabType = 'note' | 'virtual';
+
 export interface TabItem {
   path: string;
   title: string;
+  tabType?: TabType;
   isDirty: boolean;
   content: string;
   rawContent: string;

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileText, Plus, Inbox } from 'lucide-react';
+import { X, FileText, Plus, Inbox, Sparkles } from 'lucide-react';
 import { useVault } from '../../context/VaultContext';
 import { TriageModal } from '../editor/TriageModal';
 
@@ -43,6 +43,7 @@ export const TabBar: React.FC = () => {
           {openTabs.map(tab => {
             const isActive = tab.path === activeTabPath;
             const isInbox = tab.path === 'Inbox.md';
+            const isVirtual = tab.tabType === 'virtual' || tab.path.startsWith('virtual:');
 
             return (
               <div
@@ -60,7 +61,9 @@ export const TabBar: React.FC = () => {
                   <div className="absolute top-0 left-0 right-0 h-[2px] bg-accent" />
                 )}
 
-                {isInbox ? (
+                {isVirtual ? (
+                  <Sparkles className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${isActive ? 'text-accent' : 'text-purple-400'}`} />
+                ) : isInbox ? (
                   <Inbox className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${isActive ? 'text-amber-400' : 'text-text-dim'}`} />
                 ) : (
                   <FileText className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${isActive ? 'text-accent' : 'text-text-dim'}`} />

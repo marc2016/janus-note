@@ -15,6 +15,8 @@ import { JanusAgentPanel } from '../sidebar/JanusAgentPanel';
 import { OutlinePanel } from '../sidebar/OutlinePanel';
 import { TabBar } from '../tabs/TabBar';
 import { TipTapEditor } from '../editor/TipTapEditor';
+import { AiConfigView } from '../config/AiConfigView';
+import { useVault } from '../../context/VaultContext';
 
 export const WorkspaceShell: React.FC = () => {
   const {
@@ -31,6 +33,9 @@ export const WorkspaceShell: React.FC = () => {
     toggleLeftCollapse,
     toggleRightCollapse
   } = usePanelRegistry();
+
+  const { activeTabPath, activeTab } = useVault();
+  const isVirtualAiConfig = activeTabPath === 'virtual:ai-config' || activeTab?.tabType === 'virtual';
 
   // Register default panels on mount
   useEffect(() => {
@@ -140,7 +145,7 @@ export const WorkspaceShell: React.FC = () => {
           className="flex flex-col bg-canvas overflow-hidden"
         >
           <TabBar />
-          <TipTapEditor />
+          {isVirtualAiConfig ? <AiConfigView /> : <TipTapEditor />}
         </Panel>
 
         {/* Right Sidebar Pane */}

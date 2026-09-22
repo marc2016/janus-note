@@ -21,6 +21,7 @@ interface VaultContextType {
   openSampleVault: () => Promise<void>;
   refreshFiles: () => Promise<void>;
   openNote: (path: string) => Promise<void>;
+  openVirtualTab: (path: string, title: string) => void;
   closeTab: (path: string) => void;
   setActiveTab: (path: string) => void;
   updateActiveContent: (body: string, updatedFrontmatter?: Record<string, any>) => void;
@@ -169,7 +170,36 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const openVirtualTab = (path: string, title: string) => {
+    const existing = openTabs.find(t => t.path === path);
+    if (existing) {
+      setActiveTabPath(path);
+      return;
+    }
+
+    const newTab: TabItem = {
+      path,
+      title,
+      tabType: 'virtual',
+      isDirty: false,
+      content: '',
+      rawContent: '',
+      frontmatter: {},
+      lastSavedContent: '',
+      contentVersion: 0,
+    };
+
+    setOpenTabs(prev => [...prev, newTab]);
+    setActiveTabPath(path);
+  };
+
   const openNote = async (filePath: string) => {
+    if (filePath.startsWith('virtual:')) {
+      const title = filePath === 'virtual:ai-config' ? 'AI Settings' : 'Settings';
+      openVirtualTab(filePath, title);
+      return;
+    }
+
     // If already open, switch to it
     const existing = openTabs.find(t => t.path === filePath);
     if (existing) {
@@ -254,7 +284,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!activeTabPath) return;
 
     const tab = openTabs.find(t => t.path === activeTabPath);
-    if (!tab) return;
+    if (!tab || tab.tabType === 'virtual') return;
 
     const serialized = serializeMarkdownWithFrontmatter(tab.frontmatter, tab.content);
 
@@ -513,6 +543,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         openSampleVault,
         refreshFiles,
         openNote,
+        openVirtualTab,
         closeTab,
         setActiveTab: setActiveTabPath,
         updateActiveContent,
