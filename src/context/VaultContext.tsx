@@ -35,6 +35,8 @@ interface VaultContextType {
   dismissBanner: () => void;
   dismissErrorMessage: () => void;
   reloadExternalFile: (path: string) => Promise<void>;
+  editorSelection: string | null;
+  setEditorSelection: (text: string | null) => void;
 }
 
 const VaultContext = createContext<VaultContextType | undefined>(undefined);
@@ -50,6 +52,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
+  const [editorSelection, setEditorSelection] = useState<string | null>(null);
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -558,7 +561,9 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setViewMode,
         dismissBanner,
         dismissErrorMessage,
-        reloadExternalFile
+        reloadExternalFile,
+        editorSelection,
+        setEditorSelection
       }}
     >
       {children}

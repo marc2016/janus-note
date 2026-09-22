@@ -173,6 +173,8 @@ describe('agentGraph', () => {
 
     expect(res1.pendingApproval).toBeDefined();
     expect(res1.pendingApproval?.path).toBe('Protected.md');
+    expect(res1.pendingApproval?.diff).toContain('- Important critical data.');
+    expect(res1.pendingApproval?.diff).toContain('+ Replaced completely.');
     // Content should NOT be modified yet
     expect(await vaultService.readFile('Protected.md')).toBe('Important critical data.');
 
@@ -182,5 +184,53 @@ describe('agentGraph', () => {
 
     // Now file is overwritten
     expect(await vaultService.readFile('Protected.md')).toBe('Replaced completely.');
+  });
+
+  it('interrupts for in-place text replacement approval with unified diff', async () => {
+    let callCount = 0;
+    await vaultService.writeFile('Story.md', '# Chapter 1\nThe quick brown fox jumps.');
+
+    const mockChatModel = {
+      bindTools: vi.fn().mockReturnThis(),
+      invoke: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return new AIMessage({
+            content: 'Replacing sentence',
+            tool_calls: [
+              {
+                id: 'sr_1',
+                name: 'search_and_replace_note',
+                args: {
+                  path: 'Story.md',
+                  searchString: 'The quick brown fox jumps.',
+                  replacement: 'The clever fox relaxes in the sun.',
+                },
+              },
+            ],
+          });
+        }
+        return new AIMessage({ content: 'Sentence updated.' });
+      }),
+    } as unknown as JanusChatModel;
+
+    const graph = createAgentGraph(mockChatModel);
+    const config = { configurable: { thread_id: 'test-thread-replace-diff' } };
+
+    const res1 = await graph.invoke(
+      { messages: [new HumanMessage('Change the sentence about the fox')] },
+      config
+    );
+
+    expect(res1.pendingApproval).toBeDefined();
+    expect(res1.pendingApproval?.path).toBe('Story.md');
+    expect(res1.pendingApproval?.diff).toContain('- The quick brown fox jumps.');
+    expect(res1.pendingApproval?.diff).toContain('+ The clever fox relaxes in the sun.');
+
+    // User approves
+    await graph.updateState(config, { approvalDecision: 'approved' });
+    await graph.invoke(null, config);
+
+    expect(await vaultService.readFile('Story.md')).toContain('The clever fox relaxes in the sun.');
   });
 });

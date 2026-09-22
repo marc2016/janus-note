@@ -138,20 +138,35 @@ export const editNoteTool: AgentTool<{
         if (!targetSection) {
           return `Error: "targetSection" must be provided when using mode "patch".`;
         }
-        const sectionIndex = cleanExisting.indexOf(targetSection);
+        let sectionIndex = cleanExisting.indexOf(targetSection);
+        let headerLen = targetSection.length;
+        let hashes = '##';
+
         if (sectionIndex === -1) {
-          return `Error: Target section "${targetSection}" not found in "${path}".`;
+          // Try finding heading without exact markdown hashes
+          const stripped = targetSection.replace(/^#+\s*/, '').trim();
+          const headingRegex = new RegExp(`^(#{1,6})\\s+${stripped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'im');
+          const match = cleanExisting.match(headingRegex);
+          if (match && match.index !== undefined) {
+            sectionIndex = match.index;
+            headerLen = match[0].length;
+            hashes = match[1];
+          } else {
+            return `Error: Target section "${targetSection}" not found in "${path}".`;
+          }
+        } else {
+          const levelMatch = targetSection.match(/^(#+)/);
+          hashes = levelMatch ? levelMatch[1] : '##';
         }
+
         // Find next heading of same or higher level, or end of file
-        const levelMatch = targetSection.match(/^(#+)/);
-        const hashes = levelMatch ? levelMatch[1] : '##';
-        const restOfFile = cleanExisting.slice(sectionIndex + targetSection.length);
+        const restOfFile = cleanExisting.slice(sectionIndex + headerLen);
         const nextHeadingRegex = new RegExp(`\n(?=#{1,${hashes.length}}\\s+)`);
         const nextHeadingMatch = restOfFile.search(nextHeadingRegex);
 
         const before = cleanExisting.slice(0, sectionIndex);
         const after = nextHeadingMatch !== -1 ? restOfFile.slice(nextHeadingMatch) : '';
-        updated = before + cleanContent + after;
+        updated = before.trimEnd() + '\n\n' + cleanContent.trim() + (after ? '\n\n' + after.trimStart() : '\n');
       }
 
       await vaultService.writeFile(path, updated);
@@ -265,10 +280,80 @@ export const searchVaultTool: AgentTool<{ query: string; searchContent?: boolean
   },
 };
 
+export const searchAndReplaceNoteTool: AgentTool<{
+  path: string;
+  searchString: string;
+  replacement: string;
+}> = {
+  name: 'search_and_replace_note',
+  description: 'Replaces a specific text snippet or passage within a note in the vault. The search string must match uniquely within the file.',
+  definition: {
+    name: 'search_and_replace_note',
+    description: 'Replaces a specific text snippet or passage within a note in the vault. The search string must match uniquely within the file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The relative path to the note (e.g. "Inbox.md").',
+        },
+        searchString: {
+          type: 'string',
+          description: 'The exact text passage to find and replace. Provide enough surrounding context if needed to be unique.',
+        },
+        replacement: {
+          type: 'string',
+          description: 'The new replacement text.',
+        },
+      },
+      required: ['path', 'searchString', 'replacement'],
+    },
+  },
+  async execute({ path, searchString, replacement }) {
+    try {
+      const existing = await vaultService.readFile(path);
+      const cleanExisting = cleanMarkdown(existing);
+
+      if (!searchString) {
+        return `Error: searchString cannot be empty.`;
+      }
+
+      // Check occurrences
+      let count = 0;
+      let pos = cleanExisting.indexOf(searchString);
+      while (pos !== -1) {
+        count++;
+        pos = cleanExisting.indexOf(searchString, pos + searchString.length);
+      }
+
+      if (count === 0) {
+        const trimmed = searchString.trim();
+        if (cleanExisting.includes(trimmed)) {
+          searchString = trimmed;
+          count = 1;
+        } else {
+          return `Error: Could not find searchString in "${path}".`;
+        }
+      }
+
+      if (count > 1) {
+        return `Error: searchString was found ${count} times in "${path}". Please provide more surrounding text to match uniquely.`;
+      }
+
+      const updated = cleanExisting.replace(searchString, cleanMarkdown(replacement));
+      await vaultService.writeFile(path, updated);
+      return `Successfully replaced text in "${path}".`;
+    } catch (err: any) {
+      return `Error in search_and_replace_note on "${path}": ${err.message || String(err)}`;
+    }
+  },
+};
+
 export const noteTools = [
   readNoteTool,
   createNoteTool,
   editNoteTool,
+  searchAndReplaceNoteTool,
   listVaultFilesTool,
   searchVaultTool,
 ];

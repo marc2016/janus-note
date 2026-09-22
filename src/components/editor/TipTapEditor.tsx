@@ -81,7 +81,8 @@ export const TipTapEditor: React.FC = () => {
     openSampleVault,
     externalModificationBanner,
     dismissBanner,
-    reloadExternalFile
+    reloadExternalFile,
+    setEditorSelection
   } = useVault();
 
   const [isTriageOpen, setIsTriageOpen] = useState(false);
@@ -103,6 +104,12 @@ export const TipTapEditor: React.FC = () => {
       scrollContainerRef.current.scrollTop = scrollPosRef.current;
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    return () => {
+      setEditorSelection(null);
+    };
+  }, [activeTab?.path, setEditorSelection]);
 
   const editor = useEditor({
     editorProps: {
@@ -140,8 +147,15 @@ export const TipTapEditor: React.FC = () => {
     ],
     content: activeTab?.content || '',
     editable: viewMode === 'edit',
-    onSelectionUpdate: () => {
+    onSelectionUpdate: ({ editor }) => {
       setSelectionTick(t => t + 1);
+      const { from, to } = editor.state.selection;
+      if (from !== to) {
+        const text = editor.state.doc.textBetween(from, to, '\n');
+        setEditorSelection(text && text.trim().length > 0 ? text : null);
+      } else {
+        setEditorSelection(null);
+      }
     },
     onTransaction: () => {
       setSelectionTick(t => t + 1);

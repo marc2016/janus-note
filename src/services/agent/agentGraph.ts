@@ -18,6 +18,7 @@ import { allAgentTools, agentToolMap } from './tools';
 import { validateTasksFileData } from './tools/taskTools';
 import { validateMermaidSyntax, validateChartFileData } from './tools/diagramTools';
 import { vaultService } from '../vaultService';
+import { generateUnifiedDiff } from './diffUtils';
 
 export interface PendingApprovalData {
   toolCallId: string;
@@ -80,7 +81,10 @@ Janus Note pairs Markdown prose notes with structured companion data files:
 
 CRITICAL OPERATIONAL RULES:
 1. ALWAYS EXECUTE TOOLS: When the user asks you to edit, append, write, update, summarize, or create a note, task list, or diagram, DO NOT simply output the modified markdown in the chat window. You MUST call the corresponding tool to apply the change directly to the vault!
-   - To edit/append to an existing note: use "edit_note" (with mode "append", "patch", or "replace").
+   - To append new text to a note: use "edit_note" (with mode "append").
+   - To replace or patch a specific section: use "edit_note" (with mode "patch" and targetSection).
+   - To replace a specific targeted passage or sentence: use "search_and_replace_note".
+   - To completely rewrite a note: use "edit_note" (with mode "replace").
    - To create a new note: use "create_note".
    - To create a companion task list: use "create_task_list".
    - To add tasks to an existing list: use "add_tasks".
@@ -89,8 +93,8 @@ CRITICAL OPERATIONAL RULES:
    - To create a structured chart companion: use "create_chart_companion".
    - To research across the vault: use "search_vault", "read_note", or "find_related_notes".
 2. TARGET PATHS: When modifying the active note currently open in the editor, use the file path specified in the user's active note context (e.g. "Inbox.md" or "welcome.md").
-3. AMBIGUITY: If requirements are ambiguous or critical decisions are needed, call "ask_clarification".
-4. SAFETY: If overwriting or deleting an existing file with different content, call "request_file_approval".
+3. AMBIGUITY & CLARIFICATION: If the user's request could mean replacing existing text, patching a section, or appending to the bottom, DO NOT guess destructively. Call "ask_clarification" with clear options (e.g. ["Bestehenden Text ersetzen", "Abschnitt aktualisieren", "Unten als Ergänzung anfügen"]).
+4. SAFETY: Destructive changes (overwriting, replacing entire notes, patching sections, or searching and replacing text) will automatically trigger a diff approval confirmation before writing to disk.
 5. Keep your final conversational response concise, summarizing the actions you performed.`;
 
 export function createAgentGraph(chatModel?: JanusChatModel): CompiledStateGraph<any, any, any, any, any, any> {
@@ -167,16 +171,17 @@ export function createAgentGraph(chatModel?: JanusChatModel): CompiledStateGraph
         continue;
       }
 
-      // 3. Destructive safety check: if tool is create_note or write_file and file already exists, require approval
+      // 3. Destructive safety check & diff generation: intercept file overwrites and in-place modifications
       if (tc.name === 'create_note' && tc.args.path) {
         try {
           const existing = await vaultService.readFile(tc.args.path);
           if (existing && existing.trim().length > 0) {
+            const diff = generateUnifiedDiff(tc.args.path, existing, tc.args.content || '');
             pendingApproval = {
               toolCallId: tc.id || 'approval',
               path: tc.args.path,
               action: 'overwrite',
-              diff: `Replacing existing file (${existing.length} chars) with new content (${tc.args.content?.length || 0} chars)`,
+              diff,
               proposedContent: tc.args.content,
             };
             newMessages.push(
@@ -190,6 +195,90 @@ export function createAgentGraph(chatModel?: JanusChatModel): CompiledStateGraph
           }
         } catch {
           // File does not exist yet, safe to proceed
+        }
+      }
+
+      if (tc.name === 'edit_note' && tc.args.path) {
+        const mode = tc.args.mode || (tc.args.targetSection ? 'patch' : 'append');
+        if (mode === 'replace' || mode === 'patch') {
+          try {
+            const existing = await vaultService.readFile(tc.args.path);
+            let proposed = tc.args.content || '';
+            if (mode === 'patch' && tc.args.targetSection) {
+              const targetSection = tc.args.targetSection;
+              let sectionIndex = existing.indexOf(targetSection);
+              let headerLen = targetSection.length;
+              let hashes = '##';
+              if (sectionIndex === -1) {
+                const stripped = targetSection.replace(/^#+\s*/, '').trim();
+                const headingRegex = new RegExp(`^(#{1,6})\\s+${stripped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'im');
+                const match = existing.match(headingRegex);
+                if (match && match.index !== undefined) {
+                  sectionIndex = match.index;
+                  headerLen = match[0].length;
+                  hashes = match[1];
+                }
+              } else {
+                const levelMatch = targetSection.match(/^(#+)/);
+                hashes = levelMatch ? levelMatch[1] : '##';
+              }
+
+              if (sectionIndex !== -1) {
+                const restOfFile = existing.slice(sectionIndex + headerLen);
+                const nextHeadingRegex = new RegExp(`\n(?=#{1,${hashes.length}}\\s+)`);
+                const nextHeadingMatch = restOfFile.search(nextHeadingRegex);
+                const before = existing.slice(0, sectionIndex);
+                const after = nextHeadingMatch !== -1 ? restOfFile.slice(nextHeadingMatch) : '';
+                proposed = before.trimEnd() + '\n\n' + tc.args.content.trim() + (after ? '\n\n' + after.trimStart() : '\n');
+              }
+            }
+
+            const diff = generateUnifiedDiff(tc.args.path, existing, proposed);
+            pendingApproval = {
+              toolCallId: tc.id || 'approval',
+              path: tc.args.path,
+              action: 'overwrite',
+              diff,
+              proposedContent: proposed,
+            };
+            newMessages.push(
+              new ToolMessage({
+                tool_call_id: tc.id || 'approval',
+                name: tc.name,
+                content: `Modifying existing file "${tc.args.path}" in mode "${mode}". Requesting user confirmation before applying diff.`,
+              })
+            );
+            continue;
+          } catch {
+            // File read failed, tool will handle execution
+          }
+        }
+      }
+
+      if (tc.name === 'search_and_replace_note' && tc.args.path && tc.args.searchString) {
+        try {
+          const existing = await vaultService.readFile(tc.args.path);
+          if (existing.includes(tc.args.searchString)) {
+            const proposed = existing.replace(tc.args.searchString, tc.args.replacement || '');
+            const diff = generateUnifiedDiff(tc.args.path, existing, proposed);
+            pendingApproval = {
+              toolCallId: tc.id || 'approval',
+              path: tc.args.path,
+              action: 'overwrite',
+              diff,
+              proposedContent: proposed,
+            };
+            newMessages.push(
+              new ToolMessage({
+                tool_call_id: tc.id || 'approval',
+                name: tc.name,
+                content: `Targeted text replacement in "${tc.args.path}". Requesting user confirmation before applying diff.`,
+              })
+            );
+            continue;
+          }
+        } catch {
+          // File not found, tool will handle
         }
       }
 

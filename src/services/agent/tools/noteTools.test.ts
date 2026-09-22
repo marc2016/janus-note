@@ -3,6 +3,7 @@ import {
   readNoteTool,
   createNoteTool,
   editNoteTool,
+  searchAndReplaceNoteTool,
   listVaultFilesTool,
   searchVaultTool,
 } from './noteTools';
@@ -36,16 +37,49 @@ describe('noteTools', () => {
     let content = await vaultService.readFile('test_doc.md');
     expect(content).toContain('## Section C\nAppended.');
 
-    // Test patch section
+    // Test patch section with stripped heading name
     await editNoteTool.execute({
       path: 'test_doc.md',
       mode: 'patch',
-      targetSection: '## Section A',
+      targetSection: 'Section A',
       content: '## Section A\nUpdated content.',
     });
     content = await vaultService.readFile('test_doc.md');
     expect(content).toContain('Updated content.');
     expect(content).toContain('## Section B');
+  });
+
+  it('replaces targeted text passages using search_and_replace_note', async () => {
+    const res = await searchAndReplaceNoteTool.execute({
+      path: 'test_doc.md',
+      searchString: 'Original content.',
+      replacement: 'Precisely replaced paragraph.',
+    });
+    expect(res).toContain('Successfully replaced text');
+
+    const updated = await vaultService.readFile('test_doc.md');
+    expect(updated).toContain('Precisely replaced paragraph.');
+    expect(updated).not.toContain('Original content.');
+    expect(updated).toContain('## Section B');
+  });
+
+  it('handles search_and_replace_note ambiguity and missing target', async () => {
+    // Missing string
+    const notFound = await searchAndReplaceNoteTool.execute({
+      path: 'test_doc.md',
+      searchString: 'Non-existent text',
+      replacement: 'Something',
+    });
+    expect(notFound).toContain('Could not find searchString');
+
+    // Seed file with duplicates
+    await vaultService.writeFile('dups.md', 'repeat word and repeat word');
+    const duplicateMatch = await searchAndReplaceNoteTool.execute({
+      path: 'dups.md',
+      searchString: 'repeat word',
+      replacement: 'unique word',
+    });
+    expect(duplicateMatch).toContain('found 2 times');
   });
 
   it('lists files and searches content', async () => {

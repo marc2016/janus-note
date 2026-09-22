@@ -35,7 +35,14 @@ interface Message {
 }
 
 export const JanusAgentPanel: React.FC = () => {
-  const { activeTab, updateActiveContent, openNote, refreshFiles, reloadExternalFile } = useVault();
+  const {
+    activeTab,
+    updateActiveContent,
+    openNote,
+    refreshFiles,
+    reloadExternalFile,
+    editorSelection,
+  } = useVault();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -113,7 +120,16 @@ export const JanusAgentPanel: React.FC = () => {
       // Prepare context if active note exists
       let promptContent = textToSend.trim();
       if (activeTab) {
-        promptContent = `[Aktive Notiz im Editor: "${activeTab.title}" (${activeTab.path})]\n${promptContent}`;
+        const truncatedContent =
+          activeTab.content.length > 25000
+            ? activeTab.content.slice(0, 25000) + '\n...[Inhalt gekürzt]'
+            : activeTab.content;
+
+        let noteContext = `[Aktive Notiz im Editor: "${activeTab.title}" (${activeTab.path})]\n[Inhalt der aktiven Notiz:\n${truncatedContent}\n]`;
+        if (editorSelection && editorSelection.trim().length > 0) {
+          noteContext += `\n[Aktuell im Editor markierter Textauszug:\n"${editorSelection.trim()}"\n]`;
+        }
+        promptContent = `${noteContext}\n\n[Anfrage des Nutzers:]\n${promptContent}`;
       }
 
       const config = { configurable: { thread_id: threadId } };
@@ -278,11 +294,21 @@ export const JanusAgentPanel: React.FC = () => {
 
       {/* Active Note Context Pill */}
       {activeTab && (
-        <div className="px-3 py-1.5 bg-surface/30 border-b border-border-subtle/30 flex items-center text-[11px] text-text-muted flex-shrink-0">
-          <FileText className="w-3 h-3 mr-1.5 text-accent" />
-          <span className="truncate">
-            Kontext: <span className="text-text-secondary font-medium">{activeTab.title}</span>
-          </span>
+        <div className="px-3 py-1.5 bg-surface/30 border-b border-border-subtle/30 flex items-center justify-between text-[11px] text-text-muted flex-shrink-0">
+          <div className="flex items-center truncate">
+            <FileText className="w-3 h-3 mr-1.5 text-accent flex-shrink-0" />
+            <span className="truncate">
+              Kontext: <span className="text-text-secondary font-medium">{activeTab.title}</span>
+            </span>
+          </div>
+          {editorSelection && editorSelection.trim().length > 0 && (
+            <span
+              className="ml-2 px-1.5 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-medium border border-accent/25 truncate max-w-[130px]"
+              title={`Markierter Text: "${editorSelection.slice(0, 100)}..."`}
+            >
+              Markiert ({editorSelection.trim().length} Zeichen)
+            </span>
+          )}
         </div>
       )}
 
@@ -363,9 +389,23 @@ export const JanusAgentPanel: React.FC = () => {
                     {msg.pendingApproval.path}
                   </div>
                   {msg.pendingApproval.diff && (
-                    <pre className="text-[10px] font-mono bg-surface/80 p-2 rounded border border-border-subtle max-h-24 overflow-y-auto mb-2 text-text-secondary whitespace-pre-wrap">
-                      {msg.pendingApproval.diff}
-                    </pre>
+                    <div className="text-[10px] font-mono bg-surface/90 rounded border border-border-subtle max-h-40 overflow-y-auto mb-2.5 p-1.5 space-y-0.5">
+                      {msg.pendingApproval.diff.split('\n').map((line, lIdx) => {
+                        let lineStyle = 'text-text-muted';
+                        if (line.startsWith('+') && !line.startsWith('+++')) {
+                          lineStyle = 'text-emerald-400 bg-emerald-500/15 px-1 rounded-sm';
+                        } else if (line.startsWith('-') && !line.startsWith('---')) {
+                          lineStyle = 'text-rose-400 bg-rose-500/15 px-1 rounded-sm';
+                        } else if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+                          lineStyle = 'text-accent/80 font-semibold';
+                        }
+                        return (
+                          <div key={lIdx} className={`${lineStyle} whitespace-pre-wrap break-all leading-tight`}>
+                            {line || ' '}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                   <div className="flex space-x-2">
                     <button
