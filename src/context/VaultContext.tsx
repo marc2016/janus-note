@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { FileNode, TabItem, VaultInfo, ViewMode } from '../types/vault';
 import { vaultService } from '../services/vaultService';
 import { parseMarkdownWithFrontmatter, serializeMarkdownWithFrontmatter } from '../utils/frontmatter';
@@ -54,6 +54,11 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
   const [editorSelection, setEditorSelection] = useState<string | null>(null);
 
+  const openTabsRef = useRef<TabItem[]>(openTabs);
+  useEffect(() => {
+    openTabsRef.current = openTabs;
+  }, [openTabs]);
+
   const refreshFiles = useCallback(async () => {
     try {
       const files = await vaultService.listFiles();
@@ -97,13 +102,25 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
-      unlisten = await vaultService.onFileChanged(event => {
+      unlisten = await vaultService.onFileChanged(async event => {
         refreshFiles();
 
-        // Check if event targets an open tab
-        setOpenTabs(currentTabs => {
-          const tab = currentTabs.find(t => t.path === event.path);
-          if (!tab) return currentTabs;
+        const cleanEventPath = event.path.replace(/^\/+/, '');
+        const currentTabs = openTabsRef.current;
+        const tab = currentTabs.find(t => t.path.replace(/^\/+/, '') === cleanEventPath);
+        if (!tab) return;
+
+        try {
+          const diskRaw = await vaultService.readFile(cleanEventPath);
+
+          // If disk content is identical to memory or matches self-write, ignore event
+          if (
+            diskRaw === tab.rawContent ||
+            diskRaw === tab.lastSavedContent ||
+            vaultService.isSelfWrite(cleanEventPath, diskRaw)
+          ) {
+            return;
+          }
 
           if (tab.isDirty) {
             setExternalModificationBanner(
@@ -111,27 +128,26 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             );
           } else {
             // Tab is clean, auto reload content smoothly
-            vaultService.readFile(event.path).then(newRaw => {
-              const { frontmatter, body } = parseMarkdownWithFrontmatter(newRaw);
-              setOpenTabs(tabs =>
-                tabs.map(t =>
-                  t.path === event.path
-                    ? {
-                        ...t,
-                        rawContent: newRaw,
-                        content: body,
-                        frontmatter,
-                        lastSavedContent: newRaw,
-                        isDirty: false,
-                        contentVersion: (t.contentVersion || 0) + 1,
-                      }
-                    : t
-                )
-              );
-            }).catch(console.error);
+            const { frontmatter, body } = parseMarkdownWithFrontmatter(diskRaw);
+            setOpenTabs(tabs =>
+              tabs.map(t =>
+                t.path.replace(/^\/+/, '') === cleanEventPath
+                  ? {
+                      ...t,
+                      rawContent: diskRaw,
+                      content: body,
+                      frontmatter,
+                      lastSavedContent: diskRaw,
+                      isDirty: false,
+                      contentVersion: (t.contentVersion || 0) + 1,
+                    }
+                  : t
+              )
+            );
           }
-          return currentTabs;
-        });
+        } catch (err) {
+          console.debug('Failed to inspect changed file:', err);
+        }
       });
     })();
 
@@ -292,20 +308,30 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const serialized = serializeMarkdownWithFrontmatter(tab.frontmatter, tab.content);
 
+    // Immediately mark tab as clean in ref and state to prevent self-save race conditions
+    openTabsRef.current = openTabsRef.current.map(t =>
+      t.path === activeTabPath
+        ? { ...t, rawContent: serialized, lastSavedContent: serialized, isDirty: false }
+        : t
+    );
+    setOpenTabs(prev =>
+      prev.map(t =>
+        t.path === activeTabPath
+          ? { ...t, rawContent: serialized, lastSavedContent: serialized, isDirty: false }
+          : t
+      )
+    );
+    setExternalModificationBanner(null);
+
     try {
       await vaultService.writeFile(tab.path, serialized);
-      setOpenTabs(prev =>
-        prev.map(t =>
-          t.path === activeTabPath
-            ? { ...t, rawContent: serialized, lastSavedContent: serialized, isDirty: false }
-            : t
-        )
-      );
-      if (externalModificationBanner) {
-        setExternalModificationBanner(null);
-      }
     } catch (err) {
       console.error('Failed to save note:', err);
+      setOpenTabs(prev =>
+        prev.map(t =>
+          t.path === activeTabPath ? { ...t, isDirty: true } : t
+        )
+      );
     }
   };
 

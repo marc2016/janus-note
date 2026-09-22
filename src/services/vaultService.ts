@@ -68,6 +68,13 @@ Feel free to edit this note, toggle between Edit and Reading mode with **Cmd+E**
 
 const localFileChangeListeners = new Set<(event: FileChangeEvent) => void>();
 
+interface RecentWrite {
+  content: string;
+  timestamp: number;
+}
+
+const recentWrites = new Map<string, RecentWrite>();
+
 function notifyLocalFileChange(path: string, kind: 'create' | 'modify' | 'remove') {
   localFileChangeListeners.forEach(listener => {
     try {
@@ -84,6 +91,21 @@ let mockVaultInfo: VaultInfo | null = {
 };
 
 export const vaultService = {
+  isSelfWrite(path: string, content?: string): boolean {
+    const cleanPath = path.replace(/^\/+/, '');
+    const recent = recentWrites.get(cleanPath);
+    if (!recent) return false;
+    const isRecent = Date.now() - recent.timestamp < 3000;
+    if (!isRecent) {
+      recentWrites.delete(cleanPath);
+      return false;
+    }
+    if (content !== undefined) {
+      return recent.content === content;
+    }
+    return true;
+  },
+
   async getCurrentVault(): Promise<VaultInfo | null> {
     if (isTauriEnvironment()) {
       try {
@@ -137,9 +159,10 @@ export const vaultService = {
 
   async writeFile(path: string, content: string): Promise<void> {
     const cleanPath = path.replace(/^\/+/, '');
+    recentWrites.set(cleanPath, { content, timestamp: Date.now() });
+
     if (isTauriEnvironment()) {
       await invoke<void>('vault_write_file', { path: cleanPath, content });
-      notifyLocalFileChange(cleanPath, 'modify');
       return;
     }
     mockStorage[cleanPath] = content;

@@ -58,3 +58,23 @@ describe('vaultService path relocation', () => {
     ).rejects.toThrow(/Cannot move directory/);
   });
 });
+
+describe('vaultService self-write suppression', () => {
+  it('should identify recent writes as self-writes', async () => {
+    const testPath = 'self-write-test.md';
+    const testContent = '# Self Write Test Content';
+
+    expect(vaultService.isSelfWrite(testPath)).toBe(false);
+
+    await vaultService.writeFile(testPath, testContent);
+
+    // Should recognize self-write by path
+    expect(vaultService.isSelfWrite(testPath)).toBe(true);
+    // Path with leading slash should also match
+    expect(vaultService.isSelfWrite(`/${testPath}`)).toBe(true);
+    // Should match when exact content is provided
+    expect(vaultService.isSelfWrite(testPath, testContent)).toBe(true);
+    // Should NOT match if different content is provided
+    expect(vaultService.isSelfWrite(testPath, '# Different Content')).toBe(false);
+  });
+});
