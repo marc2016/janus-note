@@ -11,7 +11,9 @@ import {
   Check,
   Wrench,
   Loader2,
+  Copy,
 } from 'lucide-react';
+import { copyToClipboard } from '../../utils/clipboard';
 import { useVault } from '../../context/VaultContext';
 import { llmService } from '../../services/llm/LlmService';
 import { aiSettingsService } from '../../services/settings/aiSettingsService';
@@ -56,6 +58,19 @@ export const JanusAgentPanel: React.FC = () => {
   const [currentStepText, setCurrentStepText] = useState<string | null>(null);
   const [activeModelName, setActiveModelName] = useState(() => llmService.getActiveModel());
   const [activeProviderName, setActiveProviderName] = useState(() => aiSettingsService.getSettings().activeProviderId);
+
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
+  const handleCopyMessage = async (msgId: string, text: string) => {
+    if (!text.trim()) return;
+    const success = await copyToClipboard(text);
+    if (success) {
+      setCopiedMessageId(msgId);
+      setTimeout(() => {
+        setCopiedMessageId((prev) => (prev === msgId ? null : prev));
+      }, 2000);
+    }
+  };
 
   // Active thread ID for LangGraph checkpointer
   const [threadId] = useState(() => `thread_${Date.now()}`);
@@ -320,12 +335,41 @@ export const JanusAgentPanel: React.FC = () => {
             className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
           >
             <div
-              className={`max-w-[92%] rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
+              className={`relative group/msg max-w-[92%] rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
+                msg.text && msg.text.trim().length > 0 ? 'pr-7' : ''
+              } ${
                 msg.sender === 'user'
                   ? 'bg-accent text-white'
                   : 'bg-surface border border-border-subtle text-text-primary'
               }`}
             >
+              {msg.text && msg.text.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleCopyMessage(msg.id, msg.text)}
+                  className={`absolute top-1.5 right-1.5 p-1 rounded transition-all flex items-center space-x-1 ${
+                    copiedMessageId === msg.id
+                      ? 'opacity-100 pointer-events-auto'
+                      : 'opacity-0 group-hover/msg:opacity-100 focus:opacity-100'
+                  } ${
+                    msg.sender === 'user'
+                      ? 'text-white/80 hover:text-white bg-black/15 hover:bg-black/25'
+                      : 'text-text-muted hover:text-text-primary bg-surface/90 hover:bg-surface-hover border border-border-subtle shadow-xs'
+                  }`}
+                  title={copiedMessageId === msg.id ? 'Kopiert!' : 'Nachricht kopieren'}
+                  aria-label={copiedMessageId === msg.id ? 'Kopiert!' : 'Nachricht kopieren'}
+                >
+                  {copiedMessageId === msg.id ? (
+                    <span className="flex items-center space-x-0.5 text-[10px] text-emerald-400">
+                      <Check className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+                      <span className="font-medium">Kopiert!</span>
+                    </span>
+                  ) : (
+                    <Copy className="w-3 h-3 flex-shrink-0" />
+                  )}
+                </button>
+              )}
+
               {msg.text || (isTyping && msg.id === messages[messages.length - 1]?.id ? (
                 <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse" />
               ) : null)}
