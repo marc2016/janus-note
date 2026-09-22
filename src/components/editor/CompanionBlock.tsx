@@ -97,6 +97,22 @@ export const CompanionBlock: React.FC<CompanionBlockProps> = ({ type, rawCode })
 
   useEffect(() => {
     loadData();
+
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await vaultService.onFileChanged(event => {
+        if (!sourcePath) return;
+        const cleanSource = sourcePath.replace(/^\/+/, '');
+        const cleanEvent = event.path.replace(/^\/+/, '');
+        if (cleanEvent === cleanSource || cleanEvent.endsWith(cleanSource) || cleanSource.endsWith(cleanEvent)) {
+          loadData();
+        }
+      });
+    })();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, [sourcePath]);
 
   // Create missing companion file

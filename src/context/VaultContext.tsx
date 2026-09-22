@@ -119,7 +119,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         content: body,
                         frontmatter,
                         lastSavedContent: newRaw,
-                        isDirty: false
+                        isDirty: false,
+                        contentVersion: (t.contentVersion || 0) + 1,
                       }
                     : t
                 )
@@ -488,7 +489,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 frontmatter,
                 rawContent: raw,
                 lastSavedContent: raw,
-                isDirty: false
+                isDirty: false,
+                contentVersion: (t.contentVersion || 0) + 1,
               }
             : t
         )

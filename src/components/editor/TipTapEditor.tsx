@@ -9,6 +9,7 @@ import TableHeader from '@tiptap/extension-table-header';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Placeholder from '@tiptap/extension-placeholder';
+import { Markdown } from 'tiptap-markdown';
 import { 
   Bold, 
   Italic, 
@@ -84,6 +85,7 @@ export const TipTapEditor: React.FC = () => {
   } = useVault();
 
   const [isTriageOpen, setIsTriageOpen] = useState(false);
+  const [, setSelectionTick] = useState(0);
   const isInbox = activeTab?.path === 'Inbox.md';
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -125,21 +127,36 @@ export const TipTapEditor: React.FC = () => {
       }),
       Placeholder.configure({
         placeholder: 'Write your thoughts, plans, or insert companion blocks...'
+      }),
+      Markdown.configure({
+        html: true,
+        tightLists: true,
+        bulletListMarker: '-',
+        linkify: true,
+        breaks: false,
+        transformPastedText: true,
+        transformCopiedText: true,
       })
     ],
     content: activeTab?.content || '',
     editable: viewMode === 'edit',
+    onSelectionUpdate: () => {
+      setSelectionTick(t => t + 1);
+    },
+    onTransaction: () => {
+      setSelectionTick(t => t + 1);
+    },
     onUpdate: ({ editor }) => {
-      // TipTap text or HTML update
-      const html = editor.getHTML();
-      updateActiveContent(html);
+      const markdown = (editor.storage as any).markdown?.getMarkdown?.() || editor.getHTML();
+      updateActiveContent(markdown);
     }
   });
 
-  // Update editor content when active tab changes or content is externally reset (e.g. after triage)
+  // Update editor content when active tab changes or content is externally reset (e.g. after triage or agent edit)
   useEffect(() => {
     if (editor && activeTab) {
-      if (editor.getHTML() !== activeTab.content) {
+      const currentMd = (editor.storage as any).markdown?.getMarkdown?.();
+      if (currentMd !== activeTab.content && editor.getHTML() !== activeTab.content) {
         editor.commands.setContent(activeTab.content);
       }
     }

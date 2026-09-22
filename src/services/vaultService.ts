@@ -66,6 +66,18 @@ Feel free to edit this note, toggle between Edit and Reading mode with **Cmd+E**
   )
 };
 
+const localFileChangeListeners = new Set<(event: FileChangeEvent) => void>();
+
+function notifyLocalFileChange(path: string, kind: 'create' | 'modify' | 'remove') {
+  localFileChangeListeners.forEach(listener => {
+    try {
+      listener({ path, kind });
+    } catch (err) {
+      console.error('Error in file change listener:', err);
+    }
+  });
+}
+
 let mockVaultInfo: VaultInfo | null = {
   path: '/Users/demo/JanusVault',
   name: 'JanusVault'
@@ -126,9 +138,12 @@ export const vaultService = {
   async writeFile(path: string, content: string): Promise<void> {
     const cleanPath = path.replace(/^\/+/, '');
     if (isTauriEnvironment()) {
-      return await invoke<void>('vault_write_file', { path: cleanPath, content });
+      await invoke<void>('vault_write_file', { path: cleanPath, content });
+      notifyLocalFileChange(cleanPath, 'modify');
+      return;
     }
     mockStorage[cleanPath] = content;
+    notifyLocalFileChange(cleanPath, 'modify');
   },
 
   async createFolder(path: string): Promise<void> {
@@ -278,13 +293,19 @@ export const vaultService = {
   },
 
   async onFileChanged(callback: (event: FileChangeEvent) => void): Promise<UnlistenFn> {
+    localFileChangeListeners.add(callback);
+
+    let tauriUnlisten: UnlistenFn | undefined;
     if (isTauriEnvironment()) {
-      return await listen<FileChangeEvent>('vault://file-changed', event => {
+      tauriUnlisten = await listen<FileChangeEvent>('vault://file-changed', event => {
         callback(event.payload);
       });
     }
-    // Browser mock: no-op unlistener
-    return () => {};
+
+    return () => {
+      localFileChangeListeners.delete(callback);
+      if (tauriUnlisten) tauriUnlisten();
+    };
   },
 
   async deleteItem(path: string): Promise<void> {

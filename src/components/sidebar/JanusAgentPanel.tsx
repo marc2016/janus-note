@@ -1,51 +1,77 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Send, Sparkles, CheckCircle2, FileText, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Bot,
+  Send,
+  Sparkles,
+  CheckCircle2,
+  FileText,
+  ArrowRight,
+  HelpCircle,
+  AlertTriangle,
+  Check,
+  Wrench,
+  Loader2,
+} from 'lucide-react';
 import { useVault } from '../../context/VaultContext';
 import { llmService } from '../../services/llm/LlmService';
 import { aiSettingsService } from '../../services/settings/aiSettingsService';
-import { LlmMessage } from '../../services/llm/types';
+import { createAgentGraph, PendingApprovalData, ClarificationData } from '../../services/agent/agentGraph';
+import { HumanMessage } from '@langchain/core/messages';
+
+interface ToolBadge {
+  name: string;
+  status: 'running' | 'success' | 'failed';
+  detail?: string;
+}
 
 interface Message {
   id: string;
   sender: 'user' | 'agent';
   text: string;
   timestamp: string;
-  toolCall?: {
-    name: string;
-    target: string;
-    status: 'success' | 'running';
-  };
+  toolBadges?: ToolBadge[];
+  clarification?: ClarificationData;
+  pendingApproval?: PendingApprovalData;
 }
 
 export const JanusAgentPanel: React.FC = () => {
-  const { activeTab, updateActiveContent, openNote } = useVault();
+  const { activeTab, updateActiveContent, openNote, refreshFiles, reloadExternalFile } = useVault();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
       sender: 'agent',
-      text: "Hallo! Ich bin Janus, dein KI-Assistent. Ich arbeite direkt mit deinen Notizen und Companion-Dateien. Stelle mir Fragen zu deiner aktuellen Notiz oder lass mich Aufgaben planen.",
-      timestamp: 'Jetzt'
-    }
+      text: 'Hallo! Ich bin Janus, dein autonomer Projekt- und Wissensassistent. Ich kann deine Notizen durchsuchen, bearbeiten, Tasklisten (*.tasks.json) und Diagramme (*.chart.json / Mermaid) erstellen und strukturieren.',
+      timestamp: 'Jetzt',
+    },
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [currentStepText, setCurrentStepText] = useState<string | null>(null);
   const [activeModelName, setActiveModelName] = useState(() => llmService.getActiveModel());
   const [activeProviderName, setActiveProviderName] = useState(() => aiSettingsService.getSettings().activeProviderId);
+
+  // Active thread ID for LangGraph checkpointer
+  const [threadId] = useState(() => `thread_${Date.now()}`);
+  const agentGraph = useMemo(() => createAgentGraph(), []);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Keep active model/provider in sync with settings
   useEffect(() => {
-    return aiSettingsService.subscribe(s => {
+    return aiSettingsService.subscribe((s) => {
       setActiveProviderName(s.activeProviderId);
       setActiveModelName(llmService.getActiveModel(s.activeProviderId));
     });
   }, []);
 
-  // Auto-scroll to bottom on new messages or during streaming
+  // Auto-scroll to bottom on new messages or step updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, currentStepText]);
+
+  // Find if there is an active pending approval or clarification in the latest message
+  const activeApproval = messages[messages.length - 1]?.pendingApproval;
+  const activeClarification = messages[messages.length - 1]?.clarification;
 
   const handleSend = async (userText?: string) => {
     const textToSend = userText || input;
@@ -55,23 +81,24 @@ export const JanusAgentPanel: React.FC = () => {
       id: Date.now().toString(),
       sender: 'user',
       text: textToSend.trim(),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    setMessages((prev) => [...prev, userMsg]);
     if (!userText) setInput('');
     setIsTyping(true);
+    setCurrentStepText('Analysiere Anfrage...');
 
     const agentMsgId = (Date.now() + 1).toString();
     const initialAgentMsg: Message = {
       id: agentMsgId,
       sender: 'agent',
       text: '',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      toolBadges: [],
     };
 
-    setMessages(prev => [...prev, initialAgentMsg]);
+    setMessages((prev) => [...prev, initialAgentMsg]);
 
     try {
       const settings = aiSettingsService.getSettings();
@@ -79,62 +106,142 @@ export const JanusAgentPanel: React.FC = () => {
 
       if (!currentModel) {
         throw new Error(
-          `Kein Modell für ${settings.activeProviderId === 'ollama' ? 'Ollama' : 'Google Gemini'} ausgewählt.\nBitte klicke links auf 'AI Config', um die Verbindung herzustellen und ein Modell auszuwählen.`
+          `Kein Modell für ${settings.activeProviderId === 'ollama' ? 'Ollama' : 'Google Gemini'} ausgewählt.\nBitte klicke oben auf das Modell-Badge, um die AI Config zu öffnen.`
         );
       }
 
-      // Prepare conversation messages
-      const promptMessages: LlmMessage[] = [];
-
-      // System prompt + active note context
-      let systemContent = settings.systemPrompt || 'You are Janus Assistant, an intelligent note-taking AI copilot.';
+      // Prepare context if active note exists
+      let promptContent = textToSend.trim();
       if (activeTab) {
-        systemContent += `\n\n[Aktive Notiz im Editor]\nTitel: "${activeTab.title}"\nPfad: "${activeTab.path}"\nInhalt:\n${activeTab.content}`;
+        promptContent = `[Aktive Notiz im Editor: "${activeTab.title}" (${activeTab.path})]\n${promptContent}`;
       }
-      promptMessages.push({ role: 'system', content: systemContent });
 
-      // Conversation turns
-      for (const m of newMessages) {
-        promptMessages.push({
-          role: m.sender === 'user' ? 'user' : 'assistant',
-          content: m.text
+      const config = { configurable: { thread_id: threadId } };
+      let result: any;
+
+      if (activeClarification) {
+        await agentGraph.updateState(config, {
+          messages: [new HumanMessage(textToSend.trim())],
         });
-      }
-
-      let fullText = '';
-      for await (const chunk of llmService.chatStream({ messages: promptMessages })) {
-        if (chunk.deltaText) {
-          fullText += chunk.deltaText;
-          setMessages(prev =>
-            prev.map(m => (m.id === agentMsgId ? { ...m, text: fullText } : m))
-          );
-        }
-      }
-
-      if (!fullText.trim()) {
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === agentMsgId
-              ? { ...m, text: 'Keine Textantwort vom Modell erhalten.' }
-              : m
-          )
+        result = await agentGraph.invoke(null, config);
+      } else {
+        result = await agentGraph.invoke(
+          { messages: [new HumanMessage(promptContent)] },
+          config
         );
       }
-    } catch (err: any) {
-      const errorMsg = err.message || 'Verbindung zum LLM fehlgeschlagen.';
-      setMessages(prev =>
-        prev.map(m =>
+
+      // Extract last AI message and any interrupted state
+      const allMsgs = result.messages || [];
+      const lastAiMsg = [...allMsgs].reverse().find((m: any) => m.getType() === 'ai');
+      const toolMessages = allMsgs.filter((m: any) => m.getType() === 'tool');
+
+      const toolBadges: ToolBadge[] = toolMessages.map((tm: any) => ({
+        name: tm.name || 'tool',
+        status: tm.content.startsWith('Error') ? 'failed' : 'success',
+        detail: tm.content.slice(0, 50),
+      }));
+
+      const finalContent =
+        lastAiMsg?.content ||
+        (result.clarification
+          ? 'Ich habe eine kurze Rückfrage:'
+          : result.pendingApproval
+          ? 'Bestätigung erforderlich:'
+          : 'Aktion abgeschlossen.');
+
+      setMessages((prev) =>
+        prev.map((m) =>
           m.id === agentMsgId
             ? {
                 ...m,
-                text: `⚠️ **Verbindungsfehler:**\n${errorMsg}\n\n*Tipp:* Klicke oben auf das Modell-Badge oder links auf **AI Config**, um Modell und Verbindung zu prüfen.`
+                text: typeof finalContent === 'string' ? finalContent : JSON.stringify(finalContent),
+                toolBadges,
+                clarification: result.clarification || undefined,
+                pendingApproval: result.pendingApproval || undefined,
+              }
+            : {
+                ...m,
+                clarification: undefined,
+                pendingApproval: undefined,
+              }
+        )
+      );
+
+      // Refresh file tree and reload active note in editor so user sees changes immediately
+      await refreshFiles();
+      if (activeTab) {
+        await reloadExternalFile(activeTab.path);
+      }
+    } catch (err: any) {
+      const errorMsg = err.message || 'Ausführung durch den Agenten fehlgeschlagen.';
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === agentMsgId
+            ? {
+                ...m,
+                text: `⚠️ **Fehler bei der Agenten-Ausführung:**\n${errorMsg}\n\n*Tipp:* Überprüfe deine AI Config Verbindung.`,
               }
             : m
         )
       );
     } finally {
       setIsTyping(false);
+      setCurrentStepText(null);
     }
+  };
+
+  const handleResumeApproval = async (approved: boolean) => {
+    if (!activeApproval || isTyping) return;
+
+    setIsTyping(true);
+    setCurrentStepText(approved ? 'Wende genehmigte Änderungen an...' : 'Verwerfe Änderung...');
+
+    const agentMsgId = Date.now().toString();
+    const config = { configurable: { thread_id: threadId } };
+
+    try {
+      await agentGraph.updateState(config, {
+        approvalDecision: approved ? 'approved' : 'rejected',
+      });
+      const result = await agentGraph.invoke(null, config);
+
+      const allMsgs = result.messages || [];
+      const lastAiMsg = [...allMsgs].reverse().find((m: any) => m.getType() === 'ai');
+
+      setMessages((prev) => [
+        ...prev.map((m) => ({ ...m, pendingApproval: undefined })),
+        {
+          id: agentMsgId,
+          sender: 'agent',
+          text: (lastAiMsg?.content as string) || (approved ? 'Änderung angewendet.' : 'Änderung abgebrochen.'),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+
+      // Refresh file tree and reload active note in editor
+      await refreshFiles();
+      if (activeTab) {
+        await reloadExternalFile(activeTab.path);
+      }
+    } catch (err: any) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: agentMsgId,
+          sender: 'agent',
+          text: `⚠️ Fehler beim Anwenden: ${err.message}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+      setCurrentStepText(null);
+    }
+  };
+
+  const handleResumeClarification = (choice: string) => {
+    handleSend(choice);
   };
 
   const handleEmbedTasks = () => {
@@ -173,19 +280,21 @@ export const JanusAgentPanel: React.FC = () => {
       {activeTab && (
         <div className="px-3 py-1.5 bg-surface/30 border-b border-border-subtle/30 flex items-center text-[11px] text-text-muted flex-shrink-0">
           <FileText className="w-3 h-3 mr-1.5 text-accent" />
-          <span className="truncate">Kontext: <span className="text-text-secondary font-medium">{activeTab.title}</span></span>
+          <span className="truncate">
+            Kontext: <span className="text-text-secondary font-medium">{activeTab.title}</span>
+          </span>
         </div>
       )}
 
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        {messages.map(msg => (
+        {messages.map((msg) => (
           <div
             key={msg.id}
             className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
           >
             <div
-              className={`max-w-[88%] rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
+              className={`max-w-[92%] rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
                 msg.sender === 'user'
                   ? 'bg-accent text-white'
                   : 'bg-surface border border-border-subtle text-text-primary'
@@ -195,15 +304,86 @@ export const JanusAgentPanel: React.FC = () => {
                 <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse" />
               ) : null)}
 
-              {msg.toolCall && (
-                <div className="mt-2 pt-2 border-t border-border-subtle/80 flex items-center justify-between text-[10px] text-text-muted">
-                  <div className="flex items-center space-x-1 text-emerald-400">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span>Tool: {msg.toolCall.name}</span>
+              {/* Tool Execution Badges */}
+              {msg.toolBadges && msg.toolBadges.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-border-subtle/70 flex flex-wrap gap-1">
+                  {msg.toolBadges.map((badge, idx) => (
+                    <span
+                      key={idx}
+                      className="inline-flex items-center space-x-1 text-[10px] px-1.5 py-0.5 rounded bg-surface/90 border border-border-subtle text-text-secondary"
+                      title={badge.detail}
+                    >
+                      <Wrench className="w-2.5 h-2.5 text-accent" />
+                      <span>{badge.name}</span>
+                      {badge.status === 'success' ? (
+                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                      ) : (
+                        <Loader2 className="w-2.5 h-2.5 text-amber-400 animate-spin" />
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Clarification Card */}
+              {msg.clarification && (
+                <div className="mt-2.5 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200">
+                  <div className="flex items-center space-x-1.5 font-medium text-xs mb-1.5">
+                    <HelpCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    <span>Rückfrage des Agenten:</span>
                   </div>
-                  <span className="font-mono text-[9px] text-text-dim truncate max-w-[120px]">
-                    {msg.toolCall.target}
-                  </span>
+                  <p className="text-xs mb-2 text-text-primary">{msg.clarification.question}</p>
+                  {msg.clarification.options && msg.clarification.options.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.clarification.options.map((opt) => (
+                        <button
+                          key={opt}
+                          onClick={() => handleResumeClarification(opt)}
+                          disabled={isTyping}
+                          className="text-[11px] px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors disabled:opacity-50"
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Diff Approval Card */}
+              {msg.pendingApproval && (
+                <div className="mt-2.5 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs">
+                  <div className="flex items-center space-x-1.5 font-medium text-rose-300 mb-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                    <span>
+                      Bestätigung erforderlich: {msg.pendingApproval.action === 'overwrite' ? 'Überschreiben' : 'Löschen'}
+                    </span>
+                  </div>
+                  <div className="font-mono text-[10px] text-text-muted mb-1 truncate">
+                    {msg.pendingApproval.path}
+                  </div>
+                  {msg.pendingApproval.diff && (
+                    <pre className="text-[10px] font-mono bg-surface/80 p-2 rounded border border-border-subtle max-h-24 overflow-y-auto mb-2 text-text-secondary whitespace-pre-wrap">
+                      {msg.pendingApproval.diff}
+                    </pre>
+                  )}
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => handleResumeApproval(true)}
+                      disabled={isTyping}
+                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-[11px] flex items-center space-x-1 transition-colors disabled:opacity-50"
+                    >
+                      <Check className="w-3 h-3" />
+                      <span>Genehmigen</span>
+                    </button>
+                    <button
+                      onClick={() => handleResumeApproval(false)}
+                      disabled={isTyping}
+                      className="px-2.5 py-1 rounded bg-surface hover:bg-surface-hover border border-border-subtle text-text-muted hover:text-text-primary text-[11px] transition-colors disabled:opacity-50"
+                    >
+                      <span>Ablehnen</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -212,10 +392,11 @@ export const JanusAgentPanel: React.FC = () => {
         ))}
 
         {isTyping && (
-          <div className="flex items-center space-x-1.5 text-text-muted text-xs bg-surface/50 border border-border-subtle rounded-lg px-3 py-2 w-20">
+          <div className="flex items-center space-x-2 text-text-muted text-xs bg-surface/50 border border-border-subtle rounded-lg px-3 py-2 w-fit">
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce"></span>
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:0.2s]"></span>
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:0.4s]"></span>
+            {currentStepText && <span className="text-[11px] text-text-secondary ml-1">{currentStepText}</span>}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -229,6 +410,14 @@ export const JanusAgentPanel: React.FC = () => {
         >
           <Sparkles className="w-3 h-3 text-amber-400" />
           <span>Zusammenfassen</span>
+        </button>
+
+        <button
+          onClick={() => handleSend('Erstelle eine Taskliste für die nächste Projektphase als companion Datei.')}
+          className="flex items-center space-x-1 px-2 py-1 rounded bg-surface text-text-secondary hover:text-text-primary hover:bg-surface-hover border border-border-subtle whitespace-nowrap transition-colors"
+        >
+          <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+          <span>Taskliste planen</span>
         </button>
 
         {activeTab && (
@@ -245,7 +434,7 @@ export const JanusAgentPanel: React.FC = () => {
       {/* Input box */}
       <div className="p-3 border-t border-border-subtle/50 flex-shrink-0">
         <form
-          onSubmit={e => {
+          onSubmit={(e) => {
             e.preventDefault();
             handleSend();
           }}
@@ -254,8 +443,14 @@ export const JanusAgentPanel: React.FC = () => {
           <input
             type="text"
             value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder="Frage den Janus Agent..."
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={
+              activeClarification
+                ? 'Wähle eine Option oder antworte direkt...'
+                : activeApproval
+                ? 'Bitte bestätige die Dateiänderung oben...'
+                : 'Frage den Janus Agent...'
+            }
             className="flex-1 bg-transparent text-xs text-text-primary placeholder-text-dim focus:outline-none"
           />
           <button
